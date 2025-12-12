@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     const options = z.getOptions(b);
 
     const exe = b.addExecutable(.{
-        .name = "zig8",
+        .name = "z-chip",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

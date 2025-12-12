@@ -1,7 +1,7 @@
 .{
-    .name = .zig8,
+    .name = .z_chip,
     .version = "0.0.0",
-    .fingerprint = 0x607e2ab5b17fbda5, // Changing this has security and trust implications.
+    .fingerprint = 0x2a55b4b907b1f0e9,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .zengine = .{ .path = "../zengine" },
