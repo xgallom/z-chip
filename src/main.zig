@@ -343,8 +343,9 @@ fn keyUp(comptime key: u4) void {
 }
 
 fn update(self: *const Zengine) !bool {
-    errdefer gfx_loader.cancel();
     if (try run()) emul.flags.insert(.draw);
+
+    errdefer gfx_loader.cancel();
     if (emul.flags.contains(.draw)) {
         emul.flags.remove(.draw);
         const st = try gfx_loader.rendererSurfaceTexture("emul_screen");
@@ -359,8 +360,10 @@ fn update(self: *const Zengine) !bool {
         for (0..Mem.scr_hi_size) |n| scr[n] = if (emul.mem.scr.data.isSet(n)) white else black;
     }
 
-    const surf_tex = try gfx_loader.rendererSurfaceTexture("messages_buffer");
-    try Message.render(surf_tex.surf, gfx_loader.fonts.get(font_key));
+    if (Message.messages.items.len) {
+        const surf_tex = try gfx_loader.rendererSurfaceTexture("messages_buffer");
+        try Message.render(surf_tex.surf, gfx_loader.fonts.get(font_key));
+    }
 
     if (gfx_fence.isValid()) {
         try self.renderer.gpu_device.wait(.any, &.{gfx_fence});

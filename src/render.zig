@@ -39,7 +39,6 @@ pub fn renderScreen(
     fence: ?*gfx.GPUFence,
 ) !bool {
     const section = Renderer.sections.sub(.render);
-    section.sub(.acquire).begin();
     section.begin();
 
     if (fence) |f| {
@@ -62,11 +61,10 @@ pub fn renderScreen(
 
     const fa = allocators.frame();
 
+    section.sub(.acquire).begin();
     var command_buffer = try self.gpu_device.commandBuffer();
     errdefer command_buffer.cancel() catch {};
-
     const swapchain = try command_buffer.swapchainTexture(self.window);
-
     section.sub(.acquire).end();
 
     if (!swapchain.isValid()) {
