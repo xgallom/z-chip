@@ -48,17 +48,17 @@ pub const Regs = struct {
         self.* = .{};
     }
 
-    pub fn dump(self: *const Regs) void {
-        std.debug.print(
+    pub fn dump(self: *const Regs, w: *std.Io.Writer) !void {
+        try w.print(
             \\registers:
             \\pc: {X:04}
             \\i: {X:04}
             \\
         , .{ self.pc, self.i });
 
-        for (0..regs_v_len) |n| std.debug.print("v[{:2}]: {X:02}\n", .{ n, self.v[n] });
+        for (0..regs_v_len) |n| try w.print("v[{:2}]: {X:02}\n", .{ n, self.v[n] });
 
-        std.debug.print(
+        try w.print(
             \\sp: {X:02}
             \\dt: {X:02}
             \\st: {X:02}
@@ -84,9 +84,9 @@ pub const Stack = struct {
         self.data[idx] = val;
     }
 
-    pub fn dump(self: *const Stack) void {
-        std.debug.print("stack:\n", .{});
-        for (0..stack_size) |n| std.debug.print(
+    pub fn dump(self: *const Stack, w: *std.Io.Writer) !void {
+        try w.print("stack:\n", .{});
+        for (0..stack_size) |n| try w.print(
             "stack[{:2}]: {X:04}\n",
             .{ n, self.get(@intCast(n)) },
         );
@@ -125,6 +125,18 @@ pub const Data = struct {
         return self.uncheckedRead(addr);
     }
 
+    pub fn readWord(self: *const Data, addr: u16) !u16 {
+        if (!isValid(.prog, addr)) {
+            log.err("read word @{X:04} out of range", .{addr});
+            return Error.OutOfRange;
+        }
+        if (addr & 0x1 != 0) {
+            log.err("read word @{X:04} bad alignment", .{addr});
+            return Error.BadAlignment;
+        }
+        return Inst.wordFromData(.{ self.data[addr], self.data[addr + 1] });
+    }
+
     pub fn uncheckedRead(self: *const Data, addr: u16) u8 {
         assert(addr < data_size);
         return self.data[addr];
@@ -138,18 +150,6 @@ pub const Data = struct {
         self.data[addr] = val;
     }
 
-    pub fn decode(self: *const Data, addr: u16) !Inst {
-        if (!isValid(.prog, addr)) {
-            log.err("decode @{X:04} out of range", .{addr});
-            return Error.OutOfRange;
-        }
-        if (addr & 0x1 != 0) {
-            log.err("decode @{X:04} bad alignment", .{addr});
-            return Error.BadAlignment;
-        }
-        return .fromData(.{ self.data[addr], self.data[addr + 1] });
-    }
-
     fn isValid(comptime section: enum { font, prog, any }, addr: u16) bool {
         return switch (comptime section) {
             .font => addr < font.size,
@@ -158,27 +158,29 @@ pub const Data = struct {
         };
     }
 
-    pub fn dump(self: *const Data) void {
-        std.debug.print("data:\n", .{});
+    pub fn dump(self: *const Data, w: *std.Io.Writer) !void {
+        try w.print("data:\n", .{});
         {
             var n: u16 = 0;
             comptime assert(data_size % 0x20 == 0);
             while (n < data_size) : (n += 0x20) {
                 const line = self.sliceConst(n, n + 0x20);
                 if (std.mem.allEqual(u8, line, 0)) continue;
-                std.debug.print("[{X:4}]:", .{n});
+                try w.print("[{X:4}]:", .{n});
                 for (line, 0..) |c, i| {
-                    std.debug.print(" {X:02}", .{c});
-                    if (i % 2 == 1) std.debug.print(" ", .{});
-                    if (i == 0xF) std.debug.print("|", .{});
+                    try w.print(" {X:02}", .{c});
+                    if (i % 2 == 1) try w.print(" ", .{});
+                    if (i == 0xF) try w.print("|", .{});
                 }
-                std.debug.print("\n", .{});
+                try w.print("\n", .{});
             }
         }
     }
 };
 
 pub const Screen = struct {
+    // TODO: Make u2 and implement bitplanes
+    // https://github.com/JohnEarnest/Octo/blob/gh-pages/docs/XO-ChipSpecification.md#bitplanes
     data: std.StaticBitSet(scr_hi_size),
 
     pub fn clear(self: *Screen) void {
@@ -227,19 +229,19 @@ pub const Screen = struct {
         break :blk result;
     };
 
-    pub fn dump(self: *const Screen) void {
-        std.debug.print("screen:\n", .{});
-        std.debug.print("{s}\n", .{&border_v});
+    pub fn dump(self: *const Screen, w: *std.Io.Writer) !void {
+        try w.print("screen:\n", .{});
+        try w.print("{s}\n", .{&border_v});
         for (0..scr_hi_h) |y| {
-            std.debug.print("|", .{});
+            try w.print("|", .{});
             for (0..scr_hi_w) |x| {
                 const p = self.readHi(@intCast(y), @intCast(x));
                 const c: u8 = if (p) '#' else ' ';
-                std.debug.print("{c}", .{c});
+                try w.print("{c}", .{c});
             }
-            std.debug.print("|\n", .{});
+            try w.print("|\n", .{});
         }
-        std.debug.print("{s}\n", .{&border_v});
+        try w.print("{s}\n", .{&border_v});
     }
 };
 
@@ -268,9 +270,9 @@ pub const Keyboard = struct {
         return self.data.isSet(key);
     }
 
-    pub fn dump(self: *const Keyboard) void {
-        std.debug.print("keyboard:\n", .{});
-        for (0..key_size) |n| std.debug.print("key[{X}]: {}\n", .{
+    pub fn dump(self: *const Keyboard, w: *std.Io.Writer) !void {
+        try w.print("keyboard:\n", .{});
+        for (0..key_size) |n| try w.print("key[{X}]: {}\n", .{
             n,
             self.isDown(@intCast(n)) catch unreachable,
         });
@@ -295,9 +297,9 @@ pub fn reset(self: *Self) void {
     self.key.clear();
 }
 
-pub fn dump(self: *const Self) void {
-    std.debug.print("memory dump:\n", .{});
-    self.regs.dump();
-    self.stack.dump();
-    self.data.dump();
+pub fn dump(self: *const Self, w: *std.Io.Writer) !void {
+    try w.print("memory dump:\n", .{});
+    try self.regs.dump(w);
+    try self.stack.dump(w);
+    try self.data.dump(w);
 }

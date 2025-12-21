@@ -75,6 +75,10 @@ var allocs_window: zengine.ui.AllocsWindow = undefined;
 var perf_window: zengine.ui.PerfWindow = undefined;
 var log_window: zengine.ui.LogWindow = .invalid;
 
+var stderr_buf: [1 << 16]u8 = undefined;
+var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+const stderr = &stderr_writer.interface;
+
 const TickCounter = time.StaticCounter(std.time.ns_per_s / 60);
 const RunCounter = time.StaticCounter(std.time.ns_per_s / 500);
 
@@ -212,12 +216,12 @@ fn reset() !void {
         if (!reader.atEnd()) return error.ProgramTooLong;
     }
 
-    emul.cpu.dump(.big);
-    emul.mem.dump();
+    try emul.cpu.dump(.big, stderr);
+    try emul.mem.dump(stderr);
     emul.flags.insert(.draw);
 }
 
-fn unload(self: *const Zengine) void {
+fn unload(self: *const Zengine) !void {
     Message.deinit();
     emul.cpu.deinit(allocators.gpa());
     emul.mem.deinit(allocators.gpa());
@@ -228,6 +232,7 @@ fn unload(self: *const Zengine) void {
         self.renderer.gpu_device.wait(.any, &.{gfx_fence}) catch unreachable;
         self.renderer.gpu_device.release(&gfx_fence);
     }
+    try stderr.flush();
 }
 
 fn input(self: *const Zengine) !bool {
@@ -288,7 +293,7 @@ fn input(self: *const Zengine) !bool {
                     c.SDLK_F2 => {
                         emul.cpu.device.next();
                         emul.cpu.updateJumpTable();
-                        emul.cpu.dump(.big);
+                        try emul.cpu.dump(.big, stderr);
                         try Message.add(@tagName(emul.cpu.device));
                     },
                     c.SDLK_F10 => try reset(),
@@ -346,8 +351,10 @@ fn update(self: *const Zengine) !bool {
     if (try run()) emul.flags.insert(.draw);
 
     errdefer gfx_loader.cancel();
+    var is_rendering = false;
     if (emul.flags.contains(.draw)) {
         emul.flags.remove(.draw);
+        is_rendering = true;
         const st = try gfx_loader.rendererSurfaceTexture("emul_screen");
         const surf = st.surf;
         const scr = surf.slice(u32);
@@ -360,16 +367,20 @@ fn update(self: *const Zengine) !bool {
         for (0..Mem.scr_hi_size) |n| scr[n] = if (emul.mem.scr.data.isSet(n)) white else black;
     }
 
-    if (Message.messages.items.len) {
+    if (Message.messages.items.len != 0) {
+        is_rendering = true;
         const surf_tex = try gfx_loader.rendererSurfaceTexture("messages_buffer");
         try Message.render(surf_tex.surf, gfx_loader.fonts.get(font_key));
     }
 
-    if (gfx_fence.isValid()) {
-        try self.renderer.gpu_device.wait(.any, &.{gfx_fence});
-        self.renderer.gpu_device.release(&gfx_fence);
+    if (is_rendering) {
+        if (gfx_fence.isValid()) {
+            try self.renderer.gpu_device.wait(.any, &.{gfx_fence});
+            self.renderer.gpu_device.release(&gfx_fence);
+        }
+        gfx_fence = try gfx_loader.commit();
     }
-    gfx_fence = try gfx_loader.commit();
+    if (stderr.end != 0) try stderr.flush();
     return !emul.flags.contains(.exit);
 }
 
@@ -402,8 +413,8 @@ fn step() !bool {
     emulStep() catch |err| switch (err) {
         Inst.Error.InvalidInstruction => {
             log.warn("invalid instruction", .{});
-            emul.cpu.dump(.big);
-            emul.mem.dump();
+            try emul.cpu.dump(.big, stderr);
+            try emul.mem.dump(stderr);
             return err;
         },
         Inst.Error.WaitForKey => {
@@ -431,17 +442,17 @@ fn step() !bool {
             return false;
         },
         else => {
-            emul.cpu.dump(.big);
-            emul.mem.dump();
+            try emul.cpu.dump(.big, stderr);
+            try emul.mem.dump(stderr);
             return err;
         },
     };
 
     if (emul.flags.contains(.log_debug)) {
-        emul.mem.regs.dump();
+        try emul.mem.regs.dump(stderr);
         switch (emul.cpu.inst.op) {
-            .cls, .drw_rrc => emul.mem.scr.dump(),
-            .skp_r, .sknp_r, .ld_rk => emul.mem.key.dump(),
+            .cls, .drw_rrc => try emul.mem.scr.dump(stderr),
+            .skp_r, .sknp_r, .ld_rk => try emul.mem.key.dump(stderr),
             else => {},
         }
     }

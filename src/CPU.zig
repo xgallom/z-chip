@@ -115,7 +115,7 @@ pub fn step(self: *Self, mem: *Mem) !void {
     sections.sub(.run).sub(.step).unpause();
     defer sections.sub(.run).sub(.step).pause();
     self.inst = .invalid;
-    self.inst = try mem.data.decode(mem.regs.pc);
+    self.inst = .fromWord(try mem.data.readWord(mem.regs.pc));
     log.debug("step: {t} ({X:04}) @{X:04}", .{ self.inst.op, self.inst.args.data, mem.regs.pc });
     mem.regs.pc += 2;
     try self.exec(mem);
@@ -131,8 +131,8 @@ pub fn exec(self: *Self, mem: *Mem) !void {
     );
 }
 
-pub fn dump(self: *const Self, comptime config: enum { small, big }) void {
-    std.debug.print(
+pub fn dump(self: *const Self, comptime config: enum { small, big }, w: *std.Io.Writer) !void {
+    try w.print(
         \\cpu dump:
         \\inst: {t} ({X:04})
         \\device: {t}
@@ -145,8 +145,8 @@ pub fn dump(self: *const Self, comptime config: enum { small, big }) void {
         self.key,
     });
     if (comptime config == .big) {
-        std.debug.print("jmp:\n", .{});
-        inline for (0..JumpTable.Indexer.count) |n| std.debug.print(
+        try w.print("jmp:\n", .{});
+        inline for (0..JumpTable.Indexer.count) |n| try w.print(
             "[{X:2}]({t:9}): @{X:08}\n",
             .{ n, JumpTable.Indexer.keyForIndex(n), @intFromPtr(self.jmp.values[n]) },
         );
@@ -215,7 +215,7 @@ pub fn updateJumpTable(self: *Self) void {
     switch (flags.i_increment) {
         inline else => |i_increment| {
             self.jmp.set(.ld_iar, inst_handler.impl.ld_iar(i_increment));
-            self.jmp.set(.ld_rai, inst_handler.impl.ld_rai(i_increment));
+            self.jmp.set(.ld_ria, inst_handler.impl.ld_ria(i_increment));
         },
     }
 }
@@ -269,7 +269,10 @@ pub const inst_handler = struct {
         _ = self;
         const ax = args.x();
         const akk = args.kk();
-        if (mem.regs.v[ax] == akk) mem.regs.pc += 2;
+        if (mem.regs.v[ax] == akk) {
+            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            mem.regs.pc += inst.op.byteSize();
+        }
         log.debug("SE V{X} #{X:02}", .{ ax, akk });
     }
 
@@ -277,7 +280,10 @@ pub const inst_handler = struct {
         _ = self;
         const ax = args.x();
         const akk = args.kk();
-        if (mem.regs.v[ax] != akk) mem.regs.pc += 2;
+        if (mem.regs.v[ax] != akk) {
+            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            mem.regs.pc += inst.op.byteSize();
+        }
         log.debug("SNE V{X} #{X:02}", .{ ax, akk });
     }
 
@@ -285,7 +291,10 @@ pub const inst_handler = struct {
         _ = self;
         const ax = args.x();
         const ay = args.y();
-        if (mem.regs.v[ax] == mem.regs.v[ay]) mem.regs.pc += 2;
+        if (mem.regs.v[ax] == mem.regs.v[ay]) {
+            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            mem.regs.pc += inst.op.byteSize();
+        }
         log.debug("SNE V{X} V{X}", .{ ax, ay });
     }
 
@@ -367,7 +376,10 @@ pub const inst_handler = struct {
         _ = self;
         const ax = args.x();
         const ay = args.y();
-        if (mem.regs.v[ax] != mem.regs.v[ay]) mem.regs.pc += 2;
+        if (mem.regs.v[ax] != mem.regs.v[ay]) {
+            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            mem.regs.pc += inst.op.byteSize();
+        }
         log.debug("SNE V{X} V{X}", .{ ax, ay });
     }
 
@@ -399,15 +411,37 @@ pub const inst_handler = struct {
     pub fn skp_r(self: *Self, mem: *Mem, args: Args.x) !void {
         _ = self;
         const ax = args.x();
-        if (try mem.key.isDown(mem.regs.v[ax])) mem.regs.pc += 2;
+        if (try mem.key.isDown(mem.regs.v[ax])) {
+            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            mem.regs.pc += inst.op.byteSize();
+        }
         log.debug("SKP V{X}", .{ax});
     }
 
     pub fn sknp_r(self: *Self, mem: *Mem, args: Args.x) !void {
         _ = self;
         const ax = args.x();
-        if (!try mem.key.isDown(mem.regs.v[ax])) mem.regs.pc += 2;
+        if (!try mem.key.isDown(mem.regs.v[ax])) {
+            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            mem.regs.pc += inst.op.byteSize();
+        }
         log.debug("SKNP V{X}", .{ax});
+    }
+
+    pub fn ld_nnnn(self: *Self, mem: *Mem, args: Args) !void {
+        _ = self;
+        _ = args;
+        const nnnn = try mem.data.readWord(mem.regs.pc);
+        mem.regs.pc += 2;
+        mem.regs.i = nnnn;
+    }
+
+    pub fn ld_plane(self: *Self, mem: *Mem, args: Args) !void {
+        return impl.notImplemented(self, mem, args);
+    }
+
+    pub fn ld_audio(self: *Self, mem: *Mem, args: Args) !void {
+        return impl.notImplemented(self, mem, args);
     }
 
     pub fn ld_rd(self: *Self, mem: *Mem, args: Args.x) !void {
@@ -454,6 +488,13 @@ pub const inst_handler = struct {
         log.debug("LD F V{X}", .{ax});
     }
 
+    pub fn ld_fbr(self: *Self, mem: *Mem, args: Args.x) !void {
+        _ = self;
+        const ax = args.x();
+        mem.regs.i = (mem.regs.v[ax] & 0xf) * font.height;
+        log.debug("LD F V{X}", .{ax});
+    }
+
     pub fn ld_br(self: *Self, mem: *Mem, args: Args.x) !void {
         _ = self;
         const ax = args.x();
@@ -464,12 +505,52 @@ pub const inst_handler = struct {
         log.debug("LD B V{X}", .{ax});
     }
 
+    pub fn ld_pitch(self: *Self, mem: *Mem, args: Args) !void {
+        return impl.notImplemented(self, mem, args);
+    }
+
     pub fn ld_iar(self: *Self, mem: *Mem, args: Args) !void {
         try impl.ld_iar(Flags.default.i_increment)(self, mem, args);
     }
 
-    pub fn ld_rai(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.ld_rai(Flags.default.i_increment)(self, mem, args);
+    pub fn ld_ria(self: *Self, mem: *Mem, args: Args) !void {
+        try impl.ld_ria(Flags.default.i_increment)(self, mem, args);
+    }
+
+    pub fn ld_str(self: *Self, mem: *Mem, args: Args) !void {
+        return impl.notImplemented(self, mem, args);
+    }
+
+    pub fn ld_rst(self: *Self, mem: *Mem, args: Args) !void {
+        return impl.notImplemented(self, mem, args);
+    }
+
+    pub fn ld_iarr(self: *Self, mem: *Mem, args: Args.xy) !void {
+        _ = self;
+        const ax: u5 = args.x();
+        const ay: u5 = args.y();
+        var nx = ax;
+        var ny = ay;
+        if (ay < ax) {
+            nx = ay;
+            ny = ax;
+        }
+        for (nx..ny + 1, 0..) |vn, n| try mem.data.write(@intCast(mem.regs.i + n), mem.regs.v[vn]);
+        log.debug("LD [I] V{X}-V{X}", .{ ax, ay });
+    }
+
+    pub fn ld_rria(self: *Self, mem: *Mem, args: Args.xy) !void {
+        _ = self;
+        const ax: u5 = args.x();
+        const ay: u5 = args.y();
+        var nx = ax;
+        var ny = ay;
+        if (ay < ax) {
+            nx = ay;
+            ny = ax;
+        }
+        for (nx..ny + 1, 0..) |vn, n| mem.regs.v[vn] = try mem.data.read(@intCast(mem.regs.i + n));
+        log.debug("LD [I] V{X}-V{X}", .{ ax, ay });
     }
 
     pub fn exit(self: *Self, mem: *Mem, args: Args) !void {
@@ -480,6 +561,10 @@ pub const inst_handler = struct {
     }
 
     pub fn scroll_dn(self: *Self, mem: *Mem, args: Args) !void {
+        return impl.notImplemented(self, mem, args);
+    }
+
+    pub fn scroll_un(self: *Self, mem: *Mem, args: Args) !void {
         return impl.notImplemented(self, mem, args);
     }
 
@@ -674,9 +759,9 @@ pub const inst_handler = struct {
             return @ptrCast(&inner.ld_iar);
         }
 
-        fn ld_rai(comptime i_increment: bool) InstHandler {
+        fn ld_ria(comptime i_increment: bool) InstHandler {
             const inner = struct {
-                fn ld_rai(self: *Self, mem: *Mem, args: Args.x) !void {
+                fn ld_ria(self: *Self, mem: *Mem, args: Args.x) !void {
                     _ = self;
                     const ax: u5 = args.x();
                     for (0..ax + 1) |n| mem.regs.v[n] = try mem.data.read(@intCast(mem.regs.i + n));
@@ -684,7 +769,7 @@ pub const inst_handler = struct {
                     log.debug("LD V{X} [I]", .{ax});
                 }
             };
-            return @ptrCast(&inner.ld_rai);
+            return @ptrCast(&inner.ld_ria);
         }
     };
 };

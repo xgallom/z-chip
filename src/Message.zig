@@ -17,7 +17,7 @@ render_surf: gfx.Surface = .invalid,
 const Self = @This();
 
 pub var messages: std.ArrayList(Self) = .empty;
-var messages_len: anim.smv.ExpDecay(f32, .{}) = .init(1, .{ .smooth_time = 0.2 });
+var messages_len: anim.smv.ExpDecay(f32, .{}) = .init(1, .{ .smooth_time = 0.05 });
 
 pub fn deinit() void {
     messages.deinit(allocators.gpa());
@@ -37,6 +37,7 @@ pub fn add(text: []const u8) !void {
 pub fn remove(idx: usize) void {
     var self = messages.orderedRemove(idx);
     self.surf.deinit();
+    self.render_surf.deinit();
     messages_len.setTarget(@max(1, @as(f32, @floatFromInt(messages.items.len))));
 }
 
@@ -59,27 +60,30 @@ pub fn render(surf: gfx.Surface, font: gfx.ttf.Font) !void {
             message.surf.height(),
         }, .default);
 
-        var t = @as(f32, @floatFromInt(now - message.start)) / @as(f32, @floatFromInt(message.len));
-        t *= op.fpow(0.5)(messages_len.current);
+        const t = @as(f32, @floatFromInt(now - message.start)) / @as(f32, @floatFromInt(message.len));
+        const st = t * op.sqrt(messages_len.current);
         var h: i32 = 0;
+        const top: i32 = 0;
         var o: f32 = 1;
 
-        if (t >= 1.5) {
+        if (st >= 1.5) {
+            message.surf.deinit();
+            message.render_surf.deinit();
             to_remove.appendAssumeCapacity(n);
             continue;
         }
-        if (t >= 1) {
-            const height = op.ease(.step, op.pow(3));
-            h = @intFromFloat(math.param.lerp(
-                0,
-                @floatFromInt(message.surf.height()),
-                height((t - 1) * 2),
-            ));
-            h = @divFloor(h, 2);
-        }
-        if (t >= 0.5) {
+        // if (st >= 1) {
+        //     const height = op.ease(.step, op.pow(3));
+        //     top = @intFromFloat(math.param.lerp(
+        //         0,
+        //         @floatFromInt(message.surf.height()),
+        //         height((st - 1) * 2),
+        //     ));
+        //     top = @divFloor(top, 2);
+        // }
+        if (st >= 0.5) {
             const opacity = op.ease(.stop, op.chain(op.pow(4), op.reverse));
-            o = opacity(t - 0.5);
+            o = opacity(st - 0.5);
         } else if (t <= 0.1) {
             const height = op.ease(.start, op.chain(op.pow(3), op.reverse));
             const opacity = op.ease(.start, op.pow(4));
@@ -102,7 +106,7 @@ pub fn render(surf: gfx.Surface, font: gfx.ttf.Font) !void {
         }
 
         const src: math.Rect_i32 = .{ 0, 0, @intCast(message.surf.width()), @intCast(message.surf.height()) };
-        const dst: math.Rect_i32 = .{ off[0], off[1] - h, off[0] + src[2], off[1] + src[3] };
+        const dst: math.Rect_i32 = .{ off[0], off[1] + top, off[0] + src[2], off[1] + src[3] };
         off[1] += src[3] - h;
         try surf.blit(&dst, message.render_surf, &src);
     }
