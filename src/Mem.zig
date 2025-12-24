@@ -131,8 +131,9 @@ pub const Data = struct {
             return Error.OutOfRange;
         }
         if (addr & 0x1 != 0) {
-            log.err("read word @{X:04} bad alignment", .{addr});
-            return Error.BadAlignment;
+            log.warn("read word @{X:04} bad alignment", .{addr});
+            // log.err("read word @{X:04} bad alignment", .{addr});
+            // return Error.BadAlignment;
         }
         return Inst.wordFromData(.{ self.data[addr], self.data[addr + 1] });
     }
@@ -166,7 +167,7 @@ pub const Data = struct {
             while (n < data_size) : (n += 0x20) {
                 const line = self.sliceConst(n, n + 0x20);
                 if (std.mem.allEqual(u8, line, 0)) continue;
-                try w.print("[{X:4}]:", .{n});
+                try w.print("[{X:04}]:", .{n});
                 for (line, 0..) |c, i| {
                     try w.print(" {X:02}", .{c});
                     if (i % 2 == 1) try w.print(" ", .{});
@@ -179,12 +180,18 @@ pub const Data = struct {
 };
 
 pub const Screen = struct {
-    // TODO: Make u2 and implement bitplanes
-    // https://github.com/JohnEarnest/Octo/blob/gh-pages/docs/XO-ChipSpecification.md#bitplanes
-    data: std.StaticBitSet(scr_hi_size),
+    data: [scr_hi_size]u2,
 
-    pub fn clear(self: *Screen) void {
-        self.data = .initEmpty();
+    pub const Plane = enum(u1) {
+        p0,
+        p1,
+    };
+    pub const PlaneMask = std.EnumSet(Plane);
+    pub const plane_mask_default: PlaneMask = .initFull();
+
+    pub fn clear(self: *Screen, pm: PlaneMask) void {
+        const mask = ~pm.bits.mask;
+        for (&self.data) |*v| v.* &= mask;
     }
 
     fn index(y: u16, x: u16) usize {
@@ -199,27 +206,41 @@ pub const Screen = struct {
         return y * scr_hi_w + x;
     }
 
-    pub fn read(self: *const Screen, y: u16, x: u16) bool {
+    pub fn read(self: *const Screen, y: u16, x: u16, p: Plane) bool {
         const n = index(y, x);
-        return self.data.isSet(n);
+        return (self.data[n] >> @intFromEnum(p)) & 0x1 != 0;
     }
 
-    pub fn readHi(self: *const Screen, y: u16, x: u16) bool {
+    pub fn readHi(self: *const Screen, y: u16, x: u16, p: Plane) bool {
         const n = indexHi(y, x);
-        return self.data.isSet(n);
+        return (self.data[n] >> @intFromEnum(p)) & 0x1 != 0;
     }
 
-    pub fn write(self: *Screen, y: u16, x: u16, val: bool) void {
+    pub fn readPlaneHi(self: *const Screen, y: u16, x: u16) u2 {
+        const n = indexHi(y, x);
+        return self.data[n];
+    }
+
+    pub fn write(self: *Screen, y: u16, x: u16, is_set: bool, p: Plane) void {
         const n = index(y, x);
-        self.data.setValue(n, val);
-        self.data.setValue(n + 1, val);
-        self.data.setValue(n + scr_hi_w, val);
-        self.data.setValue(n + scr_hi_w + 1, val);
+        const val = @as(u2, 0x1) << @intFromEnum(p);
+        const set = if (is_set) val else 0;
+        self.data[n] = (self.data[n] & ~val) | set;
+        self.data[n + 1] = (self.data[n + 1] & ~val) | set;
+        self.data[n + scr_hi_w] = (self.data[n + scr_hi_w] & ~val) | set;
+        self.data[n + scr_hi_w + 1] = (self.data[n + scr_hi_w + 1] & ~val) | set;
     }
 
-    pub fn writeHi(self: *Screen, y: u16, x: u16, val: bool) void {
+    pub fn writeHi(self: *Screen, y: u16, x: u16, is_set: bool, p: Plane) void {
         const n = indexHi(y, x);
-        self.data.setValue(n, val);
+        const val = @as(u2, 0x1) << @intFromEnum(p);
+        const set = if (is_set) val else 0;
+        self.data[n] = (self.data[n] & ~val) | set;
+    }
+
+    pub fn writePlaneHi(self: *Screen, y: u16, x: u16, val: u2) void {
+        const n = indexHi(y, x);
+        self.data[n] = val;
     }
 
     const border_v = blk: {
@@ -235,8 +256,13 @@ pub const Screen = struct {
         for (0..scr_hi_h) |y| {
             try w.print("|", .{});
             for (0..scr_hi_w) |x| {
-                const p = self.readHi(@intCast(y), @intCast(x));
-                const c: u8 = if (p) '#' else ' ';
+                const p = self.readPlaneHi(@intCast(y), @intCast(x));
+                const c: u8 = switch (p) {
+                    0 => ' ',
+                    1 => '+',
+                    2 => 'x',
+                    3 => '#',
+                };
                 try w.print("{c}", .{c});
             }
             try w.print("|\n", .{});
@@ -293,7 +319,7 @@ pub fn reset(self: *Self) void {
     self.regs.reset();
     self.stack.clear();
     self.data.reset();
-    self.scr.clear();
+    self.scr.clear(.initFull());
     self.key.clear();
 }
 

@@ -23,6 +23,7 @@ const Inst = @import("Inst.zig");
 const Mem = @import("Mem.zig");
 const Message = @import("Message.zig");
 const emul_render = @import("render.zig");
+const storage = @import("storage.zig");
 
 const log = std.log.scoped(.main);
 
@@ -58,18 +59,18 @@ pub const zengine_options: zengine.Options = .{
 
 const RenderPasses = struct {
     bloom: gfx.pass.Bloom = .{
-        .intensity = 0.05,
+        .intensity = 0.1,
     },
 };
 
 const font_key = "fonts/pixel_letters.ttf";
 
-var app_args: [][:0]u8 = &.{};
 var emul: Emulator = .{};
 
 var gfx_loader: gfx.Loader = undefined;
 var gfx_passes: RenderPasses = .{};
 var gfx_fence: gfx.GPUFence = .invalid;
+var gfx_render_fence: gfx.GPUFence = .invalid;
 
 var allocs_window: zengine.ui.AllocsWindow = undefined;
 var perf_window: zengine.ui.PerfWindow = undefined;
@@ -80,7 +81,7 @@ var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 const stderr = &stderr_writer.interface;
 
 const TickCounter = time.StaticCounter(std.time.ns_per_s / 60);
-const RunCounter = time.StaticCounter(std.time.ns_per_s / 500);
+const RunCounter = time.StaticCounter(std.time.ns_per_s / 1000);
 
 const Emulator = struct {
     cpu: *CPU = undefined,
@@ -124,10 +125,6 @@ pub fn main() !void {
     log_window = try .init(allocators.gpa());
     defer log_window.deinit();
 
-    app_args = try std.process.argsAlloc(allocators.global());
-    if (app_args.len < 2) return error.NotEnoughArguments;
-    if (app_args.len > 2) return error.TooManyArguments;
-
     // log_window = try .init(allocators.gpa());
     // defer log_window.deinit();
 
@@ -140,6 +137,11 @@ pub fn main() !void {
         .render = &render,
     });
     defer engine.deinit();
+
+    const args = global.args();
+    if (args.len < 1) return error.NotEnoughArguments;
+    if (args.len > 1) return error.TooManyArguments;
+
     return engine.run();
 }
 
@@ -198,23 +200,19 @@ fn load(self: *const Zengine) !bool {
     emul.mem = try Mem.init(allocators.gpa());
 
     try reset();
-    try Message.add("press space to start...");
+    try Message.add("Press space to start...");
 
     return true;
 }
 
 fn reset() !void {
+    emul.flags.remove(.wait_for_key);
     emul.mem.reset();
     emul.cpu.reset();
-
-    {
-        const src = try std.fs.cwd().openFile(app_args[1], .{});
-        defer src.close();
-        var buf: [256]u8 = undefined;
-        var reader = src.reader(&buf);
-        try emul.mem.data.load(&reader.interface);
-        if (!reader.atEnd()) return error.ProgramTooLong;
-    }
+    storage.Program.load(emul.mem) catch |err| {
+        log.err("failed reading program file: {t}", .{err});
+        return err;
+    };
 
     try emul.cpu.dump(.big, stderr);
     try emul.mem.dump(stderr);
@@ -229,7 +227,7 @@ fn unload(self: *const Zengine) !void {
     perf_window.deinit();
     gfx_loader.deinit();
     if (gfx_fence.isValid()) {
-        self.renderer.gpu_device.wait(.any, &.{gfx_fence}) catch unreachable;
+        // self.renderer.gpu_device.wait(.any, &.{gfx_fence}) catch unreachable;
         self.renderer.gpu_device.release(&gfx_fence);
     }
     try stderr.flush();
@@ -259,7 +257,7 @@ fn input(self: *const Zengine) !bool {
                 if (event.sdl.key.key == c.SDLK_RIGHTBRACKET) {
                     if (!emul.flags.contains(.running)) {
                         emul.flags.insert(.step);
-                        try Message.add("step");
+                        try Message.add("Step");
                     }
                 }
                 if (event.sdl.key.repeat) break;
@@ -286,7 +284,7 @@ fn input(self: *const Zengine) !bool {
 
                     c.SDLK_SPACE => {
                         emul.flags.toggle(.running);
-                        try Message.add(if (emul.flags.contains(.running)) "play" else "pause");
+                        try Message.add(if (emul.flags.contains(.running)) "Play" else "Pause");
                     },
                     c.SDLK_L => emul.flags.toggle(.log_debug),
                     c.SDLK_F1 => self.ui.show_ui = !self.ui.show_ui,
@@ -294,7 +292,21 @@ fn input(self: *const Zengine) !bool {
                         emul.cpu.device.next();
                         emul.cpu.updateJumpTable();
                         try emul.cpu.dump(.big, stderr);
-                        try Message.add(@tagName(emul.cpu.device));
+                        switch (emul.cpu.device) {
+                            inline else => |device| try Message.add(
+                                std.fmt.comptimePrint("CPU device {t}", .{device}),
+                            ),
+                        }
+                    },
+                    c.SDLK_F3 => {
+                        const next = emul.cpu.run_flags.drw_plane +% 1;
+                        emul.cpu.run_flags.drw_plane = next;
+                        try emul.cpu.dump(.small, stderr);
+                        switch (next) {
+                            inline else => |n| try Message.add(
+                                std.fmt.comptimePrint("Draw plane {}", .{n}),
+                            ),
+                        }
                     },
                     c.SDLK_F10 => try reset(),
                     c.SDLK_ESCAPE => return false,
@@ -358,13 +370,15 @@ fn update(self: *const Zengine) !bool {
         const st = try gfx_loader.rendererSurfaceTexture("emul_screen");
         const surf = st.surf;
         const scr = surf.slice(u32);
-        // const black = surf.rgba(.{ 174, 95, 0, 255 });
-        // const white = surf.rgba(.{ 255, 198, 0, 255 });
-        const black = surf.rgba(.{ 0, 0, 0, 255 });
-        const white = surf.rgba(.{ 255, 255, 255, 255 });
+        const colors: [4]u32 = .{
+            surf.rgba(.{ 26, 26, 46, 255 }),
+            surf.rgba(.{ 74, 74, 90, 255 }),
+            surf.rgba(.{ 139, 21, 56, 255 }),
+            surf.rgba(.{ 214, 34, 70, 255 }),
+        };
 
         assert(surf.byteLen() == Mem.scr_hi_size * @sizeOf(u32));
-        for (0..Mem.scr_hi_size) |n| scr[n] = if (emul.mem.scr.data.isSet(n)) white else black;
+        for (0..Mem.scr_hi_size) |n| scr[n] = colors[emul.mem.scr.data[n]];
     }
 
     if (Message.messages.items.len != 0) {
@@ -375,7 +389,7 @@ fn update(self: *const Zengine) !bool {
 
     if (is_rendering) {
         if (gfx_fence.isValid()) {
-            try self.renderer.gpu_device.wait(.any, &.{gfx_fence});
+            // try self.renderer.gpu_device.wait(.any, &.{gfx_fence});
             self.renderer.gpu_device.release(&gfx_fence);
         }
         gfx_fence = try gfx_loader.commit();
@@ -442,6 +456,7 @@ fn step() !bool {
             return false;
         },
         else => {
+            log.err("failed executing cpu step: {t}", .{err});
             try emul.cpu.dump(.big, stderr);
             try emul.mem.dump(stderr);
             return err;
@@ -496,7 +511,7 @@ fn render(self: *const Zengine) !void {
 
     self.ui.endDraw();
 
-    _ = try emul_render.renderScreen(self.renderer, self.ui, &gfx_passes.bloom, &gfx_fence);
+    _ = try emul_render.renderScreen(self.renderer, self.ui, &gfx_passes.bloom, &gfx_render_fence);
 }
 
 test {

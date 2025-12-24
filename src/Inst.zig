@@ -9,6 +9,8 @@ args: Args,
 const Self = @This();
 pub const Error = error{
     InvalidInstruction,
+    InvalidArguments,
+    StorageFailed,
     WaitForKey,
     WaitingForKey,
     WaitForDraw,
@@ -81,6 +83,13 @@ pub const OpCode = enum(u8) {
 
 pub const Args = extern struct {
     data: u16,
+
+    pub const nnnn = extern struct {
+        data: u16,
+        pub inline fn nnnn(args: @This()) u16 {
+            return args.data;
+        }
+    };
 
     pub const nnn = extern struct {
         data: u16,

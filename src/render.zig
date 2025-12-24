@@ -43,7 +43,7 @@ pub fn renderScreen(
 
     if (fence) |f| {
         if (f.isValid()) {
-            try self.gpu_device.wait(.any, &.{f.*});
+            // try self.gpu_device.wait(.any, &.{f.*});
             self.gpu_device.release(f);
         }
     }

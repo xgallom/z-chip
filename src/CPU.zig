@@ -2,9 +2,11 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const zengine = @import("zengine");
+
 const font = @import("font.zig");
 const Inst = @import("Inst.zig");
 const Mem = @import("Mem.zig");
+const storage = @import("storage.zig");
 
 const log = std.log.scoped(.cpu);
 pub const sections = zengine.perf.sections(@This(), &.{.run});
@@ -63,7 +65,7 @@ pub const Flags = packed struct {
         .xochip = .{
             .vf_reset = false,
             .i_increment = true,
-            .drw_sync = false,
+            .drw_sync = true,
             .drw_clip_bottom = true,
             .shift_vx = false,
             .jp_v0a_n = false,
@@ -74,6 +76,11 @@ pub const Flags = packed struct {
 pub const RunFlags = packed struct {
     is_drw_sync: bool = false,
     is_scr_hi: bool = false,
+    drw_plane: u2 = Mem.Screen.plane_mask_default.bits.mask,
+
+    pub fn drawPlane(rf: RunFlags) Mem.Screen.PlaneMask {
+        return .{ .bits = .{ .mask = rf.drw_plane } };
+    }
 };
 
 pub fn register() !void {
@@ -109,6 +116,7 @@ pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
 pub fn reset(self: *Self) void {
     self.inst = .invalid;
     self.run_flags = .{};
+    self.key = null;
 }
 
 pub fn step(self: *Self, mem: *Mem) !void {
@@ -136,12 +144,14 @@ pub fn dump(self: *const Self, comptime config: enum { small, big }, w: *std.Io.
         \\cpu dump:
         \\inst: {t} ({X:04})
         \\device: {t}
+        \\run flags: {any}
         \\key: {?X}
         \\
     , .{
         self.inst.op,
         self.inst.args.data,
         self.device,
+        self.run_flags,
         self.key,
     });
     if (comptime config == .big) {
@@ -169,16 +179,52 @@ fn initJumpTable() JumpTable {
 pub fn updateJumpTable(self: *Self) void {
     switch (self.device) {
         .chip8 => {
+            self.jmp.set(.ld_nnnn, &inst_handler.invalid);
+            self.jmp.set(.ld_plane, &inst_handler.invalid);
+            self.jmp.set(.ld_audio, &inst_handler.invalid);
+            self.jmp.set(.ld_pitch, &inst_handler.invalid);
+            self.jmp.set(.ld_str, &inst_handler.invalid);
+            self.jmp.set(.ld_rst, &inst_handler.invalid);
+            self.jmp.set(.ld_iarr, &inst_handler.invalid);
+            self.jmp.set(.ld_rria, &inst_handler.invalid);
             self.jmp.set(.exit, &inst_handler.invalid);
             self.jmp.set(.scroll_dn, &inst_handler.invalid);
+            self.jmp.set(.scroll_un, &inst_handler.invalid);
             self.jmp.set(.scroll_r, &inst_handler.invalid);
             self.jmp.set(.scroll_l, &inst_handler.invalid);
             self.jmp.set(.scr_lo, &inst_handler.invalid);
             self.jmp.set(.scr_hi, &inst_handler.invalid);
+            self.run_flags.drw_plane = Mem.Screen.plane_mask_default.bits.mask;
         },
-        .schip, .xochip => {
+        .schip => {
+            self.jmp.set(.ld_nnnn, &inst_handler.invalid);
+            self.jmp.set(.ld_plane, &inst_handler.invalid);
+            self.jmp.set(.ld_audio, &inst_handler.invalid);
+            self.jmp.set(.ld_pitch, &inst_handler.invalid);
+            self.jmp.set(.ld_str, @ptrCast(&inst_handler.ld_str));
+            self.jmp.set(.ld_rst, @ptrCast(&inst_handler.ld_rst));
+            self.jmp.set(.ld_iarr, &inst_handler.invalid);
+            self.jmp.set(.ld_rria, &inst_handler.invalid);
             self.jmp.set(.exit, &inst_handler.exit);
             self.jmp.set(.scroll_dn, &inst_handler.scroll_dn);
+            self.jmp.set(.scroll_un, &inst_handler.invalid);
+            self.jmp.set(.scroll_r, &inst_handler.scroll_r);
+            self.jmp.set(.scroll_l, &inst_handler.scroll_l);
+            self.jmp.set(.scr_lo, &inst_handler.scr_lo);
+            self.jmp.set(.scr_hi, &inst_handler.scr_hi);
+        },
+        .xochip => {
+            self.jmp.set(.ld_nnnn, @ptrCast(&inst_handler.ld_nnnn));
+            self.jmp.set(.ld_plane, @ptrCast(&inst_handler.ld_plane));
+            self.jmp.set(.ld_audio, &inst_handler.ld_audio);
+            self.jmp.set(.ld_pitch, &inst_handler.ld_pitch);
+            self.jmp.set(.ld_str, @ptrCast(&inst_handler.ld_str));
+            self.jmp.set(.ld_rst, @ptrCast(&inst_handler.ld_rst));
+            self.jmp.set(.ld_iarr, @ptrCast(&inst_handler.ld_iarr));
+            self.jmp.set(.ld_rria, @ptrCast(&inst_handler.ld_rria));
+            self.jmp.set(.exit, &inst_handler.exit);
+            self.jmp.set(.scroll_dn, &inst_handler.scroll_dn);
+            self.jmp.set(.scroll_un, &inst_handler.scroll_un);
             self.jmp.set(.scroll_r, &inst_handler.scroll_r);
             self.jmp.set(.scroll_l, &inst_handler.scroll_l);
             self.jmp.set(.scr_lo, &inst_handler.scr_lo);
@@ -231,9 +277,8 @@ pub const inst_handler = struct {
     }
 
     pub fn cls(self: *Self, mem: *Mem, args: Args) !void {
-        _ = self;
         _ = args;
-        mem.scr.clear();
+        mem.scr.clear(self.run_flags.drawPlane());
         log.debug("CLS", .{});
     }
 
@@ -428,16 +473,19 @@ pub const inst_handler = struct {
         log.debug("SKNP V{X}", .{ax});
     }
 
-    pub fn ld_nnnn(self: *Self, mem: *Mem, args: Args) !void {
+    pub fn ld_nnnn(self: *Self, mem: *Mem, args: Args.nnnn) !void {
         _ = self;
-        _ = args;
-        const nnnn = try mem.data.readWord(mem.regs.pc);
-        mem.regs.pc += 2;
-        mem.regs.i = nnnn;
+        const annnn = args.nnnn();
+        mem.regs.i = annnn;
+        log.debug("LD I #{X:04}", .{annnn});
     }
 
-    pub fn ld_plane(self: *Self, mem: *Mem, args: Args) !void {
-        return impl.notImplemented(self, mem, args);
+    pub fn ld_plane(self: *Self, mem: *Mem, args: Args.x) !void {
+        _ = mem;
+        const ax = args.x();
+        if (ax < 1 or ax > 2) return Inst.Error.InvalidArguments;
+        self.run_flags.drw_plane = @intCast(ax);
+        log.debug("LD PLN #{X}", .{ax});
     }
 
     pub fn ld_audio(self: *Self, mem: *Mem, args: Args) !void {
@@ -517,12 +565,26 @@ pub const inst_handler = struct {
         try impl.ld_ria(Flags.default.i_increment)(self, mem, args);
     }
 
-    pub fn ld_str(self: *Self, mem: *Mem, args: Args) !void {
-        return impl.notImplemented(self, mem, args);
+    pub fn ld_str(self: *Self, mem: *Mem, args: Args.x) !void {
+        _ = self;
+        const ax: u5 = args.x();
+        storage.ProgramRegisters.store(mem.regs.v[0 .. ax + 1]) catch |err| {
+            log.err("failed writing {X} program registers to \"{s}\": {t}", .{
+                ax + 1,
+                storage.ProgramRegisters.path() catch unreachable,
+                err,
+            });
+            return Inst.Error.StorageFailed;
+        };
+        log.debug("LD STR V0-V{X}", .{ax});
     }
 
-    pub fn ld_rst(self: *Self, mem: *Mem, args: Args) !void {
-        return impl.notImplemented(self, mem, args);
+    pub fn ld_rst(self: *Self, mem: *Mem, args: Args.x) !void {
+        _ = self;
+        const ax: u5 = args.x();
+        const prog_regs = storage.ProgramRegisters.load() catch storage.ProgramRegisters.init;
+        @memcpy(mem.regs.v[0 .. ax + 1], prog_regs.data[0 .. ax + 1]);
+        log.debug("LD V0-V{X} STR", .{ax});
     }
 
     pub fn ld_iarr(self: *Self, mem: *Mem, args: Args.xy) !void {
@@ -713,10 +775,14 @@ pub const inst_handler = struct {
                                 if (mask == 0) continue;
                                 const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_hi_h;
                                 const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_hi_w;
-                                if (mem.scr.readHi(sy, sx)) {
-                                    mem.scr.writeHi(sy, sx, false);
-                                    mem.regs.v[0xf] = 1;
-                                } else mem.scr.writeHi(sy, sx, true);
+                                var iter = self.run_flags.drawPlane().iterator();
+                                mem.regs.v[0xf] = 0;
+                                while (iter.next()) |p| {
+                                    if (mem.scr.readHi(sy, sx, p)) {
+                                        mem.scr.writeHi(sy, sx, false, p);
+                                        mem.regs.v[0xf] |= 1;
+                                    } else mem.scr.writeHi(sy, sx, true, p);
+                                }
                             }
                         }
                     } else {
@@ -733,10 +799,14 @@ pub const inst_handler = struct {
                                 if (mask == 0) continue;
                                 const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_h;
                                 const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_w;
-                                if (mem.scr.read(sy, sx)) {
-                                    mem.scr.write(sy, sx, false);
-                                    mem.regs.v[0xf] = 1;
-                                } else mem.scr.write(sy, sx, true);
+                                var iter = self.run_flags.drawPlane().iterator();
+                                mem.regs.v[0xf] = 0;
+                                while (iter.next()) |p| {
+                                    if (mem.scr.read(sy, sx, p)) {
+                                        mem.scr.write(sy, sx, false, p);
+                                        mem.regs.v[0xf] |= 1;
+                                    } else mem.scr.write(sy, sx, true, p);
+                                }
                             }
                         }
                     }
@@ -753,7 +823,7 @@ pub const inst_handler = struct {
                     const ax: u5 = args.x();
                     for (0..ax + 1) |n| try mem.data.write(@intCast(mem.regs.i + n), mem.regs.v[n]);
                     if (i_increment) mem.regs.i +%= ax + 1;
-                    log.debug("LD [I] V{X}", .{ax});
+                    log.debug("LD [I] V0-V{X}", .{ax});
                 }
             };
             return @ptrCast(&inner.ld_iar);
@@ -766,7 +836,7 @@ pub const inst_handler = struct {
                     const ax: u5 = args.x();
                     for (0..ax + 1) |n| mem.regs.v[n] = try mem.data.read(@intCast(mem.regs.i + n));
                     if (i_increment) mem.regs.i +%= ax + 1;
-                    log.debug("LD V{X} [I]", .{ax});
+                    log.debug("LD V0-V{X} [I]", .{ax});
                 }
             };
             return @ptrCast(&inner.ld_ria);
