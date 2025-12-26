@@ -19,7 +19,6 @@ pub fn build(b: *std.Build) !void {
             },
         }),
     });
-
     b.installArtifact(exe);
 
     {
@@ -42,7 +41,30 @@ pub fn build(b: *std.Build) !void {
         b.getInstallStep().dependOn(&install_shaders_dir.step);
     }
 
-    const run_step = b.step("run", "Run the app");
+    {
+        const compiler_exe = b.addExecutable(.{
+            .name = "z-chip-c",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/compiler.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "zengine", .module = zengine.module("zengine") },
+                },
+            }),
+        });
+        b.installArtifact(compiler_exe);
+
+        const compiler_step = b.step("compiler", "Run the compiler");
+        const compiler_cmd = b.addRunArtifact(compiler_exe);
+        compiler_step.dependOn(&compiler_cmd.step);
+
+        if (b.args) |args| {
+            compiler_cmd.addArgs(args);
+        }
+    }
+
+    const run_step = b.step("run", "Run the emulator");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());

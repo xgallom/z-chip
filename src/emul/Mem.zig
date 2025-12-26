@@ -259,8 +259,8 @@ pub const Screen = struct {
                 const p = self.readPlaneHi(@intCast(y), @intCast(x));
                 const c: u8 = switch (p) {
                     0 => ' ',
-                    1 => '+',
-                    2 => 'x',
+                    1 => '.',
+                    2 => '+',
                     3 => '#',
                 };
                 try w.print("{c}", .{c});

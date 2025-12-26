@@ -20,6 +20,17 @@ pub const Program = struct {
         try mem.data.load(&reader.interface);
         if (!reader.atEnd()) return error.FileTooLong;
     }
+
+    pub fn store(code: []const u8) !void {
+        const prog_path = global.arg(0);
+        log.info("storing program \"{s}\"", .{prog_path});
+        const src = try std.fs.cwd().createFile(prog_path, .{ .truncate = true });
+        defer src.close();
+        var buf: [256]u8 = undefined;
+        var writer = src.writer(&buf);
+        try writer.interface.writeAll(code);
+        try writer.interface.flush();
+    }
 };
 
 pub const ProgramRegisters = extern struct {

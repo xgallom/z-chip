@@ -32,9 +32,10 @@ pub const Flags = packed struct {
 
     pub const default = device_flags.get(.default);
 
-    pub const Device = enum {
+    pub const Device = enum(u4) {
         chip8,
         schip,
+        schip_legacy,
         xochip,
 
         pub const default: Device = .xochip;
@@ -57,6 +58,14 @@ pub const Flags = packed struct {
         .schip = .{
             .vf_reset = false,
             .i_increment = false,
+            .drw_sync = false,
+            .drw_clip_bottom = true,
+            .shift_vx = true,
+            .jp_v0a_n = true,
+        },
+        .schip_legacy = .{
+            .vf_reset = false,
+            .i_increment = false,
             .drw_sync = true,
             .drw_clip_bottom = true,
             .shift_vx = true,
@@ -65,7 +74,7 @@ pub const Flags = packed struct {
         .xochip = .{
             .vf_reset = false,
             .i_increment = true,
-            .drw_sync = true,
+            .drw_sync = false,
             .drw_clip_bottom = true,
             .shift_vx = false,
             .jp_v0a_n = false,
@@ -163,6 +172,10 @@ pub fn dump(self: *const Self, comptime config: enum { small, big }, w: *std.Io.
     }
 }
 
+fn isOpValid(self: *const Self, op: Inst.OpCode) bool {
+    return self.jmp.get(op) != &inst_handler.invalid;
+}
+
 fn initJumpTable() JumpTable {
     comptime {
         var result: JumpTable = undefined;
@@ -196,7 +209,7 @@ pub fn updateJumpTable(self: *Self) void {
             self.jmp.set(.scr_hi, &inst_handler.invalid);
             self.run_flags.drw_plane = Mem.Screen.plane_mask_default.bits.mask;
         },
-        .schip => {
+        .schip, .schip_legacy => {
             self.jmp.set(.ld_nnnn, &inst_handler.invalid);
             self.jmp.set(.ld_plane, &inst_handler.invalid);
             self.jmp.set(.ld_audio, &inst_handler.invalid);
@@ -367,16 +380,16 @@ pub const inst_handler = struct {
         log.debug("LD V{X} V{X}", .{ ax, ay });
     }
 
-    pub fn or_rr(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.or_rr(Flags.default.vf_reset)(self, mem, args);
+    pub fn or_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
+        try impl.or_rr(Flags.default.vf_reset)(self, mem, @bitCast(args));
     }
 
-    pub fn and_rr(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.and_rr(Flags.default.vf_reset)(self, mem, args);
+    pub fn and_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
+        try impl.and_rr(Flags.default.vf_reset)(self, mem, @bitCast(args));
     }
 
-    pub fn xor_rr(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.xor_rr(Flags.default.vf_reset)(self, mem, args);
+    pub fn xor_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
+        try impl.xor_rr(Flags.default.vf_reset)(self, mem, @bitCast(args));
     }
 
     pub fn add_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
@@ -399,8 +412,8 @@ pub const inst_handler = struct {
         log.debug("SUB V{X} V{X}", .{ ax, ay });
     }
 
-    pub fn shr_rr(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.shr_rr(Flags.default.shift_vx)(self, mem, args);
+    pub fn shr_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
+        try impl.shr_rr(Flags.default.shift_vx)(self, mem, @bitCast(args));
     }
 
     pub fn subn_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
@@ -413,8 +426,8 @@ pub const inst_handler = struct {
         log.debug("SUBN V{X} V{X}", .{ ax, ay });
     }
 
-    pub fn shl_rr(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.shl_rr(Flags.default.shift_vx)(self, mem, args);
+    pub fn shl_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
+        try impl.shl_rr(Flags.default.shift_vx)(self, mem, @bitCast(args));
     }
 
     pub fn sne_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
@@ -435,8 +448,8 @@ pub const inst_handler = struct {
         log.debug("LD I @{X:04}", .{annn});
     }
 
-    pub fn jp_v0a(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.jp_v0a(Flags.default.jp_v0a_n)(self, mem, args);
+    pub fn jp_v0a(self: *Self, mem: *Mem, args: Args.nnn) !void {
+        try impl.jp_v0a(Flags.default.jp_v0a_n)(self, mem, @bitCast(args));
     }
 
     pub fn rnd_rc(self: *Self, mem: *Mem, args: Args.xkk) !void {
@@ -446,11 +459,11 @@ pub const inst_handler = struct {
         log.debug("RND V{X} #{X:02}", .{ ax, akk });
     }
 
-    pub fn drw_rrc(self: *Self, mem: *Mem, args: Args) !void {
+    pub fn drw_rrc(self: *Self, mem: *Mem, args: Args.xyn) !void {
         try impl.drw_rrc(
             Flags.default.drw_sync,
             Flags.default.drw_clip_bottom,
-        )(self, mem, args);
+        )(self, mem, @bitCast(args));
     }
 
     pub fn skp_r(self: *Self, mem: *Mem, args: Args.x) !void {
@@ -557,12 +570,12 @@ pub const inst_handler = struct {
         return impl.notImplemented(self, mem, args);
     }
 
-    pub fn ld_iar(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.ld_iar(Flags.default.i_increment)(self, mem, args);
+    pub fn ld_iar(self: *Self, mem: *Mem, args: Args.x) !void {
+        try impl.ld_iar(Flags.default.i_increment)(self, mem, @bitCast(args));
     }
 
-    pub fn ld_ria(self: *Self, mem: *Mem, args: Args) !void {
-        try impl.ld_ria(Flags.default.i_increment)(self, mem, args);
+    pub fn ld_ria(self: *Self, mem: *Mem, args: Args.x) !void {
+        try impl.ld_ria(Flags.default.i_increment)(self, mem, @bitCast(args));
     }
 
     pub fn ld_str(self: *Self, mem: *Mem, args: Args.x) !void {

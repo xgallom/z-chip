@@ -18,12 +18,14 @@ const Engine = zengine.Engine;
 const ui = zengine.ui;
 const str = zengine.str;
 
-const CPU = @import("CPU.zig");
-const Inst = @import("Inst.zig");
-const Mem = @import("Mem.zig");
+const emul_mod = @import("emul.zig");
+const CPU = emul_mod.CPU;
+const Inst = emul_mod.Inst;
+const Mem = emul_mod.Mem;
+const storage = emul_mod.storage;
+
 const Message = @import("Message.zig");
 const emul_render = @import("render.zig");
-const storage = @import("storage.zig");
 
 const log = std.log.scoped(.main);
 
@@ -59,7 +61,7 @@ pub const zengine_options: zengine.Options = .{
 
 const RenderPasses = struct {
     bloom: gfx.pass.Bloom = .{
-        .intensity = 0.1,
+        .intensity = 0.05,
     },
 };
 
@@ -70,7 +72,6 @@ var emul: Emulator = .{};
 var gfx_loader: gfx.Loader = undefined;
 var gfx_passes: RenderPasses = .{};
 var gfx_fence: gfx.GPUFence = .invalid;
-var gfx_render_fence: gfx.GPUFence = .invalid;
 
 var allocs_window: zengine.ui.AllocsWindow = undefined;
 var perf_window: zengine.ui.PerfWindow = undefined;
@@ -227,7 +228,7 @@ fn unload(self: *const Zengine) !void {
     perf_window.deinit();
     gfx_loader.deinit();
     if (gfx_fence.isValid()) {
-        // self.renderer.gpu_device.wait(.any, &.{gfx_fence}) catch unreachable;
+        self.renderer.gpu_device.wait(.any, &.{gfx_fence}) catch unreachable;
         self.renderer.gpu_device.release(&gfx_fence);
     }
     try stderr.flush();
@@ -286,7 +287,13 @@ fn input(self: *const Zengine) !bool {
                         emul.flags.toggle(.running);
                         try Message.add(if (emul.flags.contains(.running)) "Play" else "Pause");
                     },
-                    c.SDLK_L => emul.flags.toggle(.log_debug),
+                    c.SDLK_L => {
+                        emul.flags.toggle(.log_debug);
+                        switch (emul.flags.contains(.log_debug)) {
+                            false => try Message.add("Log off"),
+                            true => try Message.add("Log on"),
+                        }
+                    },
                     c.SDLK_F1 => self.ui.show_ui = !self.ui.show_ui,
                     c.SDLK_F2 => {
                         emul.cpu.device.next();
@@ -307,6 +314,12 @@ fn input(self: *const Zengine) !bool {
                                 std.fmt.comptimePrint("Draw plane {}", .{n}),
                             ),
                         }
+                    },
+                    c.SDLK_F4 => {
+                        try emul.cpu.dump(.small, stderr);
+                        try emul.mem.dump(stderr);
+                        try emul.mem.scr.dump(stderr);
+                        try Message.add("Dump");
                     },
                     c.SDLK_F10 => try reset(),
                     c.SDLK_ESCAPE => return false,
@@ -370,6 +383,12 @@ fn update(self: *const Zengine) !bool {
         const st = try gfx_loader.rendererSurfaceTexture("emul_screen");
         const surf = st.surf;
         const scr = surf.slice(u32);
+        const bw_colors: [4]u32 = .{
+            surf.rgba(.{ 0, 0, 0, 255 }),
+            surf.rgba(.{ 255, 0, 0, 255 }),
+            surf.rgba(.{ 0, 255, 255, 255 }),
+            surf.rgba(.{ 255, 255, 255, 255 }),
+        };
         const colors: [4]u32 = .{
             surf.rgba(.{ 26, 26, 46, 255 }),
             surf.rgba(.{ 74, 74, 90, 255 }),
@@ -378,7 +397,11 @@ fn update(self: *const Zengine) !bool {
         };
 
         assert(surf.byteLen() == Mem.scr_hi_size * @sizeOf(u32));
-        for (0..Mem.scr_hi_size) |n| scr[n] = colors[emul.mem.scr.data[n]];
+        if (emul.cpu.run_flags.drw_plane != 3) {
+            for (0..Mem.scr_hi_size) |n| scr[n] = colors[emul.mem.scr.data[n]];
+        } else {
+            for (0..Mem.scr_hi_size) |n| scr[n] = bw_colors[emul.mem.scr.data[n]];
+        }
     }
 
     if (Message.messages.items.len != 0) {
@@ -389,7 +412,7 @@ fn update(self: *const Zengine) !bool {
 
     if (is_rendering) {
         if (gfx_fence.isValid()) {
-            // try self.renderer.gpu_device.wait(.any, &.{gfx_fence});
+            try self.renderer.gpu_device.wait(.any, &.{gfx_fence});
             self.renderer.gpu_device.release(&gfx_fence);
         }
         gfx_fence = try gfx_loader.commit();
@@ -465,6 +488,11 @@ fn step() !bool {
 
     if (emul.flags.contains(.log_debug)) {
         try emul.mem.regs.dump(stderr);
+        try emul.mem.data.dump(stderr);
+        try stderr.print("flags:", .{});
+        var iter = emul.flags.iterator();
+        while (iter.next()) |flag| try stderr.print(" {t}", .{flag});
+        try stderr.print("\n", .{});
         switch (emul.cpu.inst.op) {
             .cls, .drw_rrc => try emul.mem.scr.dump(stderr),
             .skp_r, .sknp_r, .ld_rk => try emul.mem.key.dump(stderr),
@@ -511,11 +539,11 @@ fn render(self: *const Zengine) !void {
 
     self.ui.endDraw();
 
-    _ = try emul_render.renderScreen(self.renderer, self.ui, &gfx_passes.bloom, &gfx_render_fence);
+    _ = try emul_render.renderScreen(self.renderer, self.ui, &.{
+        gfx_passes.bloom.interface(),
+    }, &gfx_fence);
 }
 
 test {
-    std.testing.refAllDecls(CPU);
-    std.testing.refAllDecls(Inst);
-    std.testing.refAllDecls(Mem);
+    std.testing.refAllDecls(emul_mod);
 }

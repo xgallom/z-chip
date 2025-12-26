@@ -1,6 +1,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+const CPU = @import("CPU.zig");
+const Prog = @import("Prog.zig");
+
 pub const byte_size = 2;
 
 op: OpCode,
@@ -75,31 +78,71 @@ pub const OpCode = enum(u8) {
 
     pub fn byteSize(op: OpCode) u16 {
         return switch (op) {
-            .ld_nnnn => 4,
-            else => 2,
+            .ld_nnnn => 2 * byte_size,
+            else => byte_size,
         };
+    }
+
+    pub fn ArgsType(comptime op: OpCode) type {
+        const info = @typeInfo(@TypeOf(@field(CPU.inst_handler, @tagName(op)))).@"fn";
+        return info.params[2].type orelse unreachable;
     }
 };
 
 pub const Args = extern struct {
-    data: u16,
+    data: u16 = 0,
+
+    pub const args_type: Type = .none;
+    pub const ArgsType = @This();
+    pub const Type = enum {
+        none,
+        nnnn,
+        nnn,
+        xkk,
+        xyn,
+        xy,
+        x,
+    };
+
+    pub fn init(a: ArgsType) @This() {
+        return a;
+    }
+
+    pub fn add(self: *Args, args: anytype) void {
+        self.data |= args.data;
+    }
 
     pub const nnnn = extern struct {
-        data: u16,
+        data: u16 = 0,
+        pub const args_type: Type = .nnnn;
+        pub const ArgsType = struct { nnnn: u16 = 0 };
+        pub fn init(a: @This().ArgsType) @This() {
+            return .{ .data = a.nnnn };
+        }
         pub inline fn nnnn(args: @This()) u16 {
             return args.data;
         }
     };
 
     pub const nnn = extern struct {
-        data: u16,
+        data: u16 = 0,
+        pub const args_type: Type = .nnn;
+        pub const ArgsType = struct { nnn: u12 = 0 };
+        pub fn init(a: @This().ArgsType) @This() {
+            return .{ .data = a.nnn };
+        }
         pub inline fn nnn(args: @This()) u12 {
             return @truncate(args.data);
         }
     };
 
     pub const xkk = extern struct {
-        data: u16,
+        data: u16 = 0,
+        pub const args_type: Type = .xkk;
+        pub const ArgsType = struct { x: u4 = 0, kk: u8 = 0 };
+        pub fn init(a: @This().ArgsType) @This() {
+            return .{ .data = @as(u16, a.x) << 8 | @as(u16, a.kk) };
+        }
         pub inline fn x(args: @This()) u4 {
             return @truncate(args.data >> 8);
         }
@@ -109,7 +152,12 @@ pub const Args = extern struct {
     };
 
     pub const xyn = extern struct {
-        data: u16,
+        data: u16 = 0,
+        pub const args_type: Type = .xyn;
+        pub const ArgsType = struct { x: u4 = 0, y: u4 = 0, n: u4 = 0 };
+        pub fn init(a: @This().ArgsType) @This() {
+            return .{ .data = @as(u16, a.x) << 8 | @as(u16, a.y) << 4 | @as(u16, a.n) };
+        }
         pub inline fn x(args: @This()) u4 {
             return @truncate(args.data >> 8);
         }
@@ -123,6 +171,11 @@ pub const Args = extern struct {
 
     pub const xy = extern struct {
         data: u16,
+        pub const args_type: Type = .xy;
+        pub const ArgsType = struct { x: u4 = 0, y: u4 = 0 };
+        pub fn init(a: @This().ArgsType) @This() {
+            return .{ .data = @as(u16, a.x) << 8 | @as(u16, a.y) << 4 };
+        }
         pub inline fn x(args: @This()) u4 {
             return @truncate(args.data >> 8);
         }
@@ -132,7 +185,12 @@ pub const Args = extern struct {
     };
 
     pub const x = extern struct {
-        data: u16,
+        data: u16 = 0,
+        pub const args_type: Type = .x;
+        pub const ArgsType = struct { x: u4 = 0 };
+        pub fn init(a: @This().ArgsType) @This() {
+            return .{ .data = @as(u16, a.x) << 8 };
+        }
         pub inline fn x(args: @This()) u4 {
             return @truncate(args.data >> 8);
         }
@@ -141,6 +199,10 @@ pub const Args = extern struct {
 
 test Args {
     const args: Args = .{ .data = 0xABCD };
+    {
+        const a: Args.nnnn = @bitCast(args);
+        try std.testing.expectEqual(a.nnnn(), 0xABCD);
+    }
     {
         const a: Args.nnn = @bitCast(args);
         try std.testing.expectEqual(a.nnn(), 0xBCD);
@@ -177,6 +239,73 @@ pub fn fromWord(data: u16) Self {
 
 pub fn fromData(data: [byte_size]u8) Self {
     return decode(wordFromData(data));
+}
+
+pub fn encode(
+    comptime op: OpCode,
+    a: OpCode.ArgsType(op).ArgsType,
+    resolve: Prog.EncodedInst.Resolve,
+) Prog.EncodedInst {
+    var result: Self = switch (op) {
+        .invalid => .init(op, 0xFFFF),
+        .cls => .init(op, 0x00E0),
+        .ret => .init(op, 0x00EE),
+        .sys_a => .init(op, 0x0000),
+        .jp_a => .init(op, 0x1000),
+        .call_a => .init(op, 0x2000),
+        .se_rc => .init(op, 0x3000),
+        .sne_rc => .init(op, 0x4000),
+        .se_rr => .init(op, 0x5000),
+        .ld_rc => .init(op, 0x6000),
+        .add_rc => .init(op, 0x7000),
+        .ld_rr => .init(op, 0x8000),
+        .or_rr => .init(op, 0x8001),
+        .and_rr => .init(op, 0x8002),
+        .xor_rr => .init(op, 0x8003),
+        .add_rr => .init(op, 0x8004),
+        .sub_rr => .init(op, 0x8005),
+        .shr_rr => .init(op, 0x8006),
+        .subn_rr => .init(op, 0x8007),
+        .shl_rr => .init(op, 0x800E),
+        .sne_rr => .init(op, 0x9000),
+        .ld_ia => .init(op, 0xA000),
+        .jp_v0a => .init(op, 0xB000),
+        .rnd_rc => .init(op, 0xC000),
+        .drw_rrc => .init(op, 0xD000),
+        .skp_r => .init(op, 0xE09E),
+        .sknp_r => .init(op, 0xE0A1),
+        .ld_nnnn => .init(op, 0xF000),
+        .ld_plane => .init(op, 0xF001),
+        .ld_audio => .init(op, 0xF002),
+        .ld_rd => .init(op, 0xF007),
+        .ld_rk => .init(op, 0xF00A),
+        .ld_dr => .init(op, 0xF015),
+        .ld_sr => .init(op, 0xF018),
+        .add_ir => .init(op, 0xF01E),
+        .ld_fr => .init(op, 0xF029),
+        .ld_fbr => .init(op, 0xF030),
+        .ld_br => .init(op, 0xF033),
+        .ld_pitch => .init(op, 0xF03A),
+        .ld_iar => .init(op, 0xF055),
+        .ld_ria => .init(op, 0xF065),
+        .ld_str => .init(op, 0xF075),
+        .ld_rst => .init(op, 0xF085),
+        .ld_iarr => .init(op, 0x5002),
+        .ld_rria => .init(op, 0x5003),
+        .exit => .init(op, 0x00FD),
+        .scroll_dn => .init(op, 0x00C0),
+        .scroll_un => .init(op, 0x00D0),
+        .scroll_r => .init(op, 0x00FB),
+        .scroll_l => .init(op, 0x00FC),
+        .scr_lo => .init(op, 0x00FE),
+        .scr_hi => .init(op, 0x00FF),
+    };
+    const args: OpCode.ArgsType(op) = .init(a);
+    result.args.add(args);
+    var ei: Prog.EncodedInst = .init(result);
+    if (op == .ld_nnnn) ei.nnnn.data = args.data;
+    ei.resolve = resolve;
+    return ei;
 }
 
 pub fn decode(i: u16) Self {

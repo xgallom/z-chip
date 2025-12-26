@@ -13,7 +13,7 @@ const Error = gfx.Error;
 const Renderer = gfx.Renderer;
 const sections = Renderer.sections;
 
-const Mem = @import("Mem.zig");
+const Mem = @import("emul.zig").Mem;
 const Message = @import("Message.zig");
 
 const log = std.log.scoped(.gfx_render);
@@ -35,7 +35,7 @@ pub fn createEmulPipeline(loader: *gfx.Loader) !void {
 pub fn renderScreen(
     self: *const Renderer,
     ui_ptr: ?*ui_mod.UI,
-    bloom_pass: *gfx.pass.Bloom,
+    passes: []const gfx.pass.TextureInterface,
     fence: ?*gfx.GPUFence,
 ) !bool {
     const section = Renderer.sections.sub(.render);
@@ -43,7 +43,7 @@ pub fn renderScreen(
 
     if (fence) |f| {
         if (f.isValid()) {
-            // try self.gpu_device.wait(.any, &.{f.*});
+            try self.gpu_device.wait(.any, &.{f.*});
             self.gpu_device.release(f);
         }
     }
@@ -64,7 +64,7 @@ pub fn renderScreen(
     section.sub(.acquire).begin();
     var command_buffer = try self.gpu_device.commandBuffer();
     errdefer command_buffer.cancel() catch {};
-    const swapchain = try command_buffer.swapchainTexture(self.window);
+    const swapchain = try command_buffer.swapchainTextureWait(self.window);
     section.sub(.acquire).end();
 
     if (!swapchain.isValid()) {
@@ -120,7 +120,16 @@ pub fn renderScreen(
         render_pass.end();
     }
 
-    try bloom_pass.render(self, command_buffer, screen_buffer, output_buffer);
+    // They are swapped in opposite order first run
+    // src -> screen_buffer
+    // dst -> output_buffer
+    var src_buffer = output_buffer;
+    var dst_buffer = screen_buffer;
+    for (passes) |pass| {
+        std.mem.swap(gfx.GPUTexture, &src_buffer, &dst_buffer);
+        try pass.render(self, command_buffer, src_buffer, dst_buffer);
+    }
+
     {
         var render_pass = try command_buffer.renderPass(&.{
             .{ .texture = swapchain, .load_op = .clear, .store_op = .store },
