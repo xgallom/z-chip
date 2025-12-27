@@ -9,6 +9,9 @@ const log = std.log.scoped(.mem);
 pub const regs_v_len = 16;
 pub const stack_size = 16;
 pub const data_size = 0x1000;
+pub const addr_drw_sync = 0x169;
+pub const addr_timer_begin = 0x180;
+pub const addr_timer_end = 0x190;
 pub const prog_begin = 0x200;
 pub const prog_end = data_size;
 pub const prog_size = prog_end - prog_begin;
@@ -126,7 +129,7 @@ pub const Data = struct {
     }
 
     pub fn readWord(self: *const Data, addr: u16) !u16 {
-        if (!isValid(.prog, addr)) {
+        if (!isValid(.any, addr)) {
             log.err("read word @{X:04} out of range", .{addr});
             return Error.OutOfRange;
         }
@@ -144,7 +147,7 @@ pub const Data = struct {
     }
 
     pub fn write(self: *Data, addr: u16, val: u8) !void {
-        if (!isValid(.prog, addr)) {
+        if (!isValid(.any, addr)) {
             log.err("write @{X:04} out of range", .{addr});
             return Error.OutOfRange;
         }

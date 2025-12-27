@@ -19,8 +19,9 @@ pub const std_options: std.Options = .{
         // .{ .scope = .cpu, .level = .debug },
         // .{ .scope = .inst, .level = .debug },
         // .{ .scope = .mem, .level = .debug },
-        .{ .scope = .prog, .level = .debug },
-        .{ .scope = .syntax, .level = .debug },
+        // .{ .scope = .prog, .level = .debug },
+        // .{ .scope = .syntax, .level = .debug },
+        // .{ .scope = .parser, .level = .debug },
     },
 };
 

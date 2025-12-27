@@ -1,5 +1,10 @@
 const std = @import("std");
 
+const game_files: []const []const u8 = &.{
+    "src/stddef.zc8",
+    "src/main.zc8",
+};
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -62,6 +67,18 @@ pub fn build(b: *std.Build) !void {
         if (b.args) |args| {
             compiler_cmd.addArgs(args);
         }
+
+        const game_step = b.step("build game", "compile the zc8 game");
+        const game_cmd = b.addRunArtifact(compiler_exe);
+        game_step.dependOn(&game_cmd.step);
+
+        const game_output = game_cmd.addOutputFileArg("bin/game.ch8");
+        for (game_files) |game_file| _ = game_cmd.addFileArg(b.path(
+            try std.fs.path.join(b.allocator, &.{ "assets/prog", game_file }),
+        ));
+
+        const install_game = b.addInstallFile(game_output, "prog/game.ch8");
+        b.getInstallStep().dependOn(&install_game.step);
     }
 
     const run_step = b.step("run", "Run the emulator");

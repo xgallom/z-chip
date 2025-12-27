@@ -27,6 +27,7 @@ pub const Flags = packed struct {
     i_increment: bool,
     drw_sync: bool,
     drw_clip_bottom: bool,
+    drw_16x16: bool,
     shift_vx: bool,
     jp_v0a_n: bool,
 
@@ -35,10 +36,9 @@ pub const Flags = packed struct {
     pub const Device = enum(u4) {
         chip8,
         schip,
-        schip_legacy,
-        xochip,
+        zchip,
 
-        pub const default: Device = .xochip;
+        pub const default: Device = .zchip;
 
         pub fn next(self: *Device) void {
             self.* = @enumFromInt((@intFromEnum(self.*) + 1) % DeviceFlags.Indexer.count);
@@ -52,6 +52,7 @@ pub const Flags = packed struct {
             .i_increment = true,
             .drw_sync = true,
             .drw_clip_bottom = true,
+            .drw_16x16 = false,
             .shift_vx = false,
             .jp_v0a_n = false,
         },
@@ -60,22 +61,16 @@ pub const Flags = packed struct {
             .i_increment = false,
             .drw_sync = false,
             .drw_clip_bottom = true,
+            .drw_16x16 = true,
             .shift_vx = true,
             .jp_v0a_n = true,
         },
-        .schip_legacy = .{
-            .vf_reset = false,
-            .i_increment = false,
-            .drw_sync = true,
-            .drw_clip_bottom = true,
-            .shift_vx = true,
-            .jp_v0a_n = true,
-        },
-        .xochip = .{
+        .zchip = .{
             .vf_reset = false,
             .i_increment = true,
             .drw_sync = false,
             .drw_clip_bottom = true,
+            .drw_16x16 = true,
             .shift_vx = false,
             .jp_v0a_n = false,
         },
@@ -84,6 +79,7 @@ pub const Flags = packed struct {
 
 pub const RunFlags = packed struct {
     is_drw_sync: bool = false,
+    drw_sync_enabled: bool = false,
     is_scr_hi: bool = false,
     drw_plane: u2 = Mem.Screen.plane_mask_default.bits.mask,
 
@@ -209,7 +205,7 @@ pub fn updateJumpTable(self: *Self) void {
             self.jmp.set(.scr_hi, &inst_handler.invalid);
             self.run_flags.drw_plane = Mem.Screen.plane_mask_default.bits.mask;
         },
-        .schip, .schip_legacy => {
+        .schip => {
             self.jmp.set(.ld_nnnn, &inst_handler.invalid);
             self.jmp.set(.ld_plane, &inst_handler.invalid);
             self.jmp.set(.ld_audio, &inst_handler.invalid);
@@ -226,7 +222,7 @@ pub fn updateJumpTable(self: *Self) void {
             self.jmp.set(.scr_lo, &inst_handler.scr_lo);
             self.jmp.set(.scr_hi, &inst_handler.scr_hi);
         },
-        .xochip => {
+        .zchip => {
             self.jmp.set(.ld_nnnn, @ptrCast(&inst_handler.ld_nnnn));
             self.jmp.set(.ld_plane, @ptrCast(&inst_handler.ld_plane));
             self.jmp.set(.ld_audio, &inst_handler.ld_audio);
@@ -266,8 +262,14 @@ pub fn updateJumpTable(self: *Self) void {
     }
     switch (flags.drw_sync) {
         inline else => |drw_sync| switch (flags.drw_clip_bottom) {
-            inline else => |drw_clip_bottom| {
-                self.jmp.set(.drw_rrc, inst_handler.impl.drw_rrc(drw_sync, drw_clip_bottom));
+            inline else => |drw_clip_bottom| switch (flags.drw_16x16) {
+                inline else => |drw_16x16| {
+                    self.jmp.set(.drw_rrc, inst_handler.impl.drw_rrc(
+                        drw_sync,
+                        drw_clip_bottom,
+                        drw_16x16,
+                    ));
+                },
             },
         },
     }
@@ -463,6 +465,7 @@ pub const inst_handler = struct {
         try impl.drw_rrc(
             Flags.default.drw_sync,
             Flags.default.drw_clip_bottom,
+            Flags.default.drw_16x16,
         )(self, mem, @bitCast(args));
     }
 
@@ -488,7 +491,9 @@ pub const inst_handler = struct {
 
     pub fn ld_nnnn(self: *Self, mem: *Mem, args: Args.nnnn) !void {
         _ = self;
-        const annnn = args.nnnn();
+        _ = args;
+        const annnn = try mem.data.readWord(mem.regs.pc);
+        mem.regs.pc += 2;
         mem.regs.i = annnn;
         log.debug("LD I #{X:04}", .{annnn});
     }
@@ -764,10 +769,10 @@ pub const inst_handler = struct {
             return @ptrCast(&inner.jp_v0a);
         }
 
-        fn drw_rrc(comptime drw_sync: bool, comptime drw_clip_bottom: bool) InstHandler {
+        fn drw_rrc(comptime drw_sync: bool, comptime drw_clip_bottom: bool, comptime drw_16x16: bool) InstHandler {
             const inner = struct {
                 fn drw_rrc(self: *Self, mem: *Mem, args: Args.xyn) !void {
-                    if (drw_sync) {
+                    if (drw_sync or self.run_flags.drw_sync_enabled) {
                         if (!self.run_flags.is_drw_sync) return Inst.Error.WaitForDraw;
                     }
 
@@ -775,50 +780,102 @@ pub const inst_handler = struct {
                     const ay = args.y();
                     const an = args.n();
                     if (self.run_flags.is_scr_hi) {
-                        for (0..an) |_y| {
-                            const y: u4 = @intCast(_y);
-                            const src = try mem.data.read(@intCast(mem.regs.i + y));
-                            for (0..8) |_x| {
-                                const x: u3 = @intCast(_x);
-                                var mask: u1 = @truncate(src >> (7 - x));
-                                if (drw_clip_bottom) {
-                                    if (mem.regs.v[ay] % Mem.scr_hi_h + y >= Mem.scr_hi_h or
-                                        mem.regs.v[ax] % Mem.scr_hi_w + x >= Mem.scr_hi_w) mask = 0;
+                        if (drw_16x16 and an == 0) {
+                            for (0..16) |_y| {
+                                const y: u4 = @intCast(_y);
+                                const src = try mem.data.readWord(@intCast(mem.regs.i + 2 * _y));
+                                for (0..16) |_x| {
+                                    const x: u4 = @intCast(_x);
+                                    var mask: u1 = @truncate(src >> (15 - x));
+                                    if (drw_clip_bottom) {
+                                        if (mem.regs.v[ay] % Mem.scr_hi_h + y >= Mem.scr_hi_h or
+                                            mem.regs.v[ax] % Mem.scr_hi_w + x >= Mem.scr_hi_w) mask = 0;
+                                    }
+                                    if (mask == 0) continue;
+                                    const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_hi_h;
+                                    const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_hi_w;
+                                    var iter = self.run_flags.drawPlane().iterator();
+                                    mem.regs.v[0xf] = 0;
+                                    while (iter.next()) |p| {
+                                        if (mem.scr.readHi(sy, sx, p)) {
+                                            mem.scr.writeHi(sy, sx, false, p);
+                                            mem.regs.v[0xf] |= 1;
+                                        } else mem.scr.writeHi(sy, sx, true, p);
+                                    }
                                 }
-                                if (mask == 0) continue;
-                                const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_hi_h;
-                                const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_hi_w;
-                                var iter = self.run_flags.drawPlane().iterator();
-                                mem.regs.v[0xf] = 0;
-                                while (iter.next()) |p| {
-                                    if (mem.scr.readHi(sy, sx, p)) {
-                                        mem.scr.writeHi(sy, sx, false, p);
-                                        mem.regs.v[0xf] |= 1;
-                                    } else mem.scr.writeHi(sy, sx, true, p);
+                            }
+                        } else {
+                            for (0..an) |_y| {
+                                const y: u4 = @intCast(_y);
+                                const src = try mem.data.read(@intCast(mem.regs.i + y));
+                                for (0..8) |_x| {
+                                    const x: u3 = @intCast(_x);
+                                    var mask: u1 = @truncate(src >> (7 - x));
+                                    if (drw_clip_bottom) {
+                                        if (mem.regs.v[ay] % Mem.scr_hi_h + y >= Mem.scr_hi_h or
+                                            mem.regs.v[ax] % Mem.scr_hi_w + x >= Mem.scr_hi_w) mask = 0;
+                                    }
+                                    if (mask == 0) continue;
+                                    const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_hi_h;
+                                    const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_hi_w;
+                                    var iter = self.run_flags.drawPlane().iterator();
+                                    mem.regs.v[0xf] = 0;
+                                    while (iter.next()) |p| {
+                                        if (mem.scr.readHi(sy, sx, p)) {
+                                            mem.scr.writeHi(sy, sx, false, p);
+                                            mem.regs.v[0xf] |= 1;
+                                        } else mem.scr.writeHi(sy, sx, true, p);
+                                    }
                                 }
                             }
                         }
                     } else {
-                        for (0..an) |_y| {
-                            const y: u4 = @intCast(_y);
-                            const src = try mem.data.read(@intCast(mem.regs.i + y));
-                            for (0..8) |_x| {
-                                const x: u3 = @intCast(_x);
-                                var mask: u1 = @truncate(src >> (7 - x));
-                                if (drw_clip_bottom) {
-                                    if (mem.regs.v[ay] % Mem.scr_h + y >= Mem.scr_h or
-                                        mem.regs.v[ax] % Mem.scr_w + x >= Mem.scr_w) mask = 0;
+                        if (drw_16x16 and an == 0) {
+                            for (0..16) |_y| {
+                                const y: u4 = @intCast(_y);
+                                const src: u16 = try mem.data.readWord(@intCast(mem.regs.i + 2 * _y));
+                                for (0..16) |_x| {
+                                    const x: u4 = @intCast(_x);
+                                    var mask: u1 = @truncate(src >> (15 - x));
+                                    if (drw_clip_bottom) {
+                                        if (mem.regs.v[ay] % Mem.scr_h + y >= Mem.scr_h or
+                                            mem.regs.v[ax] % Mem.scr_w + x >= Mem.scr_w) mask = 0;
+                                    }
+                                    if (mask == 0) continue;
+                                    const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_h;
+                                    const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_w;
+                                    var iter = self.run_flags.drawPlane().iterator();
+                                    mem.regs.v[0xf] = 0;
+                                    while (iter.next()) |p| {
+                                        if (mem.scr.read(sy, sx, p)) {
+                                            mem.scr.write(sy, sx, false, p);
+                                            mem.regs.v[0xf] |= 1;
+                                        } else mem.scr.write(sy, sx, true, p);
+                                    }
                                 }
-                                if (mask == 0) continue;
-                                const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_h;
-                                const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_w;
-                                var iter = self.run_flags.drawPlane().iterator();
-                                mem.regs.v[0xf] = 0;
-                                while (iter.next()) |p| {
-                                    if (mem.scr.read(sy, sx, p)) {
-                                        mem.scr.write(sy, sx, false, p);
-                                        mem.regs.v[0xf] |= 1;
-                                    } else mem.scr.write(sy, sx, true, p);
+                            }
+                        } else {
+                            for (0..an) |_y| {
+                                const y: u4 = @intCast(_y);
+                                const src = try mem.data.read(@intCast(mem.regs.i + y));
+                                for (0..8) |_x| {
+                                    const x: u3 = @intCast(_x);
+                                    var mask: u1 = @truncate(src >> (7 - x));
+                                    if (drw_clip_bottom) {
+                                        if (mem.regs.v[ay] % Mem.scr_h + y >= Mem.scr_h or
+                                            mem.regs.v[ax] % Mem.scr_w + x >= Mem.scr_w) mask = 0;
+                                    }
+                                    if (mask == 0) continue;
+                                    const sy = (mem.regs.v[ay] + @as(u16, y)) % Mem.scr_h;
+                                    const sx = (mem.regs.v[ax] + @as(u16, x)) % Mem.scr_w;
+                                    var iter = self.run_flags.drawPlane().iterator();
+                                    mem.regs.v[0xf] = 0;
+                                    while (iter.next()) |p| {
+                                        if (mem.scr.read(sy, sx, p)) {
+                                            mem.scr.write(sy, sx, false, p);
+                                            mem.regs.v[0xf] |= 1;
+                                        } else mem.scr.write(sy, sx, true, p);
+                                    }
                                 }
                             }
                         }

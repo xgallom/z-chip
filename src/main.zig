@@ -82,14 +82,15 @@ var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 const stderr = &stderr_writer.interface;
 
 const TickCounter = time.StaticCounter(std.time.ns_per_s / 60);
-const RunCounter = time.StaticCounter(std.time.ns_per_s / 1000);
+const RunCounter = time.Counter;
 
 const Emulator = struct {
     cpu: *CPU = undefined,
     mem: *Mem = undefined,
     flags: Flags = .initEmpty(),
+    run_speed: RunSpeed = .init,
     tick_counter: TickCounter = .init,
-    run_counter: RunCounter = .init,
+    run_counter: RunCounter = .init(RunSpeed.init.interval()),
 
     const State = enum(std.math.Log2Int(u32)) {
         exit,
@@ -103,6 +104,48 @@ const Emulator = struct {
         log_debug,
     };
     const Flags = std.EnumSet(State);
+
+    const RunSpeed = enum(u16) {
+        @"420Hz",
+        @"900Hz",
+        @"1.2kHz",
+        @"1.8kHz",
+        @"6kHz",
+        @"12kHz",
+        @"30kHz",
+        @"60kHz",
+        @"600kHz",
+        @"1.2MHz",
+        @"2.4MHz",
+        @"3.6MHz",
+
+        const init: RunSpeed = .@"60kHz";
+
+        fn interval(rs: RunSpeed) u64 {
+            return switch (rs) {
+                .@"420Hz" => std.time.ns_per_s / 420,
+                .@"900Hz" => std.time.ns_per_s / 900,
+                .@"1.2kHz" => std.time.ns_per_s / 1_200,
+                .@"1.8kHz" => std.time.ns_per_s / 1_800,
+                .@"6kHz" => std.time.ns_per_s / 6_000,
+                .@"12kHz" => std.time.ns_per_s / 12_000,
+                .@"30kHz" => std.time.ns_per_s / 30_000,
+                .@"60kHz" => std.time.ns_per_s / 30_000,
+                .@"600kHz" => std.time.ns_per_s / 600_000,
+                .@"1.2MHz" => std.time.ns_per_s / 1_200_000,
+                .@"2.4MHz" => std.time.ns_per_s / 2_400_000,
+                .@"3.6MHz" => std.time.ns_per_s / 3_600_000,
+            };
+        }
+
+        pub fn cycle(self: *RunSpeed, comptime direction: enum { back, forward }) void {
+            const count = std.enums.EnumIndexer(RunSpeed).count;
+            switch (direction) {
+                .forward => self.* = @enumFromInt((@intFromEnum(self.*) + 1) % count),
+                .back => self.* = @enumFromInt((@intFromEnum(self.*) + count - 1) % count),
+            }
+        }
+    };
 };
 
 fn logFn(
@@ -294,6 +337,24 @@ fn input(self: *const Zengine) !bool {
                             true => try Message.add("Log on"),
                         }
                     },
+                    c.SDLK_MINUS => {
+                        emul.run_speed.cycle(.back);
+                        emul.run_counter.interval = emul.run_speed.interval();
+                        switch (emul.run_speed) {
+                            inline else => |run_speed| try Message.add(
+                                std.fmt.comptimePrint("Frequency {t}", .{run_speed}),
+                            ),
+                        }
+                    },
+                    c.SDLK_EQUALS => {
+                        emul.run_speed.cycle(.forward);
+                        emul.run_counter.interval = emul.run_speed.interval();
+                        switch (emul.run_speed) {
+                            inline else => |run_speed| try Message.add(
+                                std.fmt.comptimePrint("Frequency {t}", .{run_speed}),
+                            ),
+                        }
+                    },
                     c.SDLK_F1 => self.ui.show_ui = !self.ui.show_ui,
                     c.SDLK_F2 => {
                         emul.cpu.device.next();
@@ -306,6 +367,18 @@ fn input(self: *const Zengine) !bool {
                         }
                     },
                     c.SDLK_F3 => {
+                        const next = !emul.cpu.run_flags.drw_sync_enabled;
+                        emul.cpu.run_flags.drw_sync_enabled = next;
+                        const flags = CPU.Flags.device_flags.get(emul.cpu.device);
+                        switch (flags.drw_sync) {
+                            false => switch (next) {
+                                false => try Message.add("Draw sync disabled"),
+                                true => try Message.add("Draw sync enabled"),
+                            },
+                            true => try Message.add("Draw sync is locked"),
+                        }
+                    },
+                    c.SDLK_F4 => {
                         const next = emul.cpu.run_flags.drw_plane +% 1;
                         emul.cpu.run_flags.drw_plane = next;
                         try emul.cpu.dump(.small, stderr);
@@ -315,7 +388,7 @@ fn input(self: *const Zengine) !bool {
                             ),
                         }
                     },
-                    c.SDLK_F4 => {
+                    c.SDLK_F5 => {
                         try emul.cpu.dump(.small, stderr);
                         try emul.mem.dump(stderr);
                         try emul.mem.scr.dump(stderr);
@@ -429,8 +502,8 @@ fn run() !bool {
         while (emul.run_counter.run()) {
             const is_drw_sync = emul.cpu.run_flags.is_drw_sync;
             if (!try step()) return false;
-            emul.tick_counter.add(RunCounter.interval);
-            if (emul.tick_counter.run()) tick();
+            emul.tick_counter.add(emul.run_counter.interval);
+            if (emul.tick_counter.run()) try tick();
             if (is_drw_sync) return true;
         }
         return false;
@@ -439,8 +512,8 @@ fn run() !bool {
         emul.flags.remove(.step);
         const is_drw_sync = emul.cpu.run_flags.is_drw_sync;
         if (!try step()) return false;
-        emul.tick_counter.add(RunCounter.interval);
-        if (emul.tick_counter.run()) tick();
+        emul.tick_counter.add(emul.run_counter.interval);
+        if (emul.tick_counter.run()) try tick();
         return is_drw_sync;
     }
     return false;
@@ -487,8 +560,8 @@ fn step() !bool {
     };
 
     if (emul.flags.contains(.log_debug)) {
+        try emul.cpu.dump(.small, stderr);
         try emul.mem.regs.dump(stderr);
-        try emul.mem.data.dump(stderr);
         try stderr.print("flags:", .{});
         var iter = emul.flags.iterator();
         while (iter.next()) |flag| try stderr.print(" {t}", .{flag});
@@ -496,6 +569,7 @@ fn step() !bool {
         switch (emul.cpu.inst.op) {
             .cls, .drw_rrc => try emul.mem.scr.dump(stderr),
             .skp_r, .sknp_r, .ld_rk => try emul.mem.key.dump(stderr),
+            .ld_iar, .ld_iarr => try emul.mem.data.dump(stderr),
             else => {},
         }
     }
@@ -518,10 +592,15 @@ fn emulStep() !void {
     emul.cpu.run_flags.is_drw_sync = false;
 }
 
-fn tick() void {
+fn tick() !void {
     emul.mem.regs.dt -|= 1;
     emul.mem.regs.st -|= 1;
     emul.cpu.run_flags.is_drw_sync = true;
+    try emul.mem.data.write(Mem.addr_drw_sync, 1);
+    for (Mem.addr_timer_begin..Mem.addr_timer_end) |addr| {
+        const v = try emul.mem.data.read(@intCast(addr));
+        try emul.mem.data.write(@intCast(addr), v -| 1);
+    }
 }
 
 fn render(self: *const Zengine) !void {

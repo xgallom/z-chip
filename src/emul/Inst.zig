@@ -4,6 +4,8 @@ const assert = std.debug.assert;
 const CPU = @import("CPU.zig");
 const Prog = @import("Prog.zig");
 
+const log = std.log.scoped(.inst);
+
 pub const byte_size = 2;
 
 op: OpCode,
@@ -85,7 +87,7 @@ pub const OpCode = enum(u8) {
 
     pub fn ArgsType(comptime op: OpCode) type {
         const info = @typeInfo(@TypeOf(@field(CPU.inst_handler, @tagName(op)))).@"fn";
-        return info.params[2].type orelse unreachable;
+        return info.params[2].type orelse @compileError("Failed obtaining args type for " ++ @tagName(op));
     }
 };
 
@@ -300,8 +302,9 @@ pub fn encode(
         .scr_lo => .init(op, 0x00FE),
         .scr_hi => .init(op, 0x00FF),
     };
+
     const args: OpCode.ArgsType(op) = .init(a);
-    result.args.add(args);
+    if (op != .ld_nnnn) result.args.add(args);
     var ei: Prog.EncodedInst = .init(result);
     if (op == .ld_nnnn) ei.nnnn.data = args.data;
     ei.resolve = resolve;
