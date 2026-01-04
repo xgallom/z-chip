@@ -1,8 +1,20 @@
 const std = @import("std");
 
-const game_files: []const []const u8 = &.{
-    "src/stddef.zc8",
-    "src/main.zc8",
+pub const ProgMeta = struct {
+    name: []const u8,
+    sources: []const []const u8,
+};
+
+const programs: []const ProgMeta = &.{
+    .{
+        .name = "editor",
+        .sources = &.{
+            "src/stddef.zc8",
+            "src/editor/main.zc8",
+            "src/editor/update.zc8",
+            "src/editor/data.zc8",
+        },
+    },
 };
 
 pub fn build(b: *std.Build) !void {
@@ -60,7 +72,7 @@ pub fn build(b: *std.Build) !void {
         });
         b.installArtifact(compiler_exe);
 
-        const compiler_step = b.step("compiler", "Run the compiler");
+        const compiler_step = b.step("compiler", "Run the zchip compiler");
         const compiler_cmd = b.addRunArtifact(compiler_exe);
         compiler_step.dependOn(&compiler_cmd.step);
 
@@ -68,20 +80,28 @@ pub fn build(b: *std.Build) !void {
             compiler_cmd.addArgs(args);
         }
 
-        const game_step = b.step("build game", "compile the zc8 game");
-        const game_cmd = b.addRunArtifact(compiler_exe);
-        game_step.dependOn(&game_cmd.step);
+        const prog_step = b.step("compile", "Compile the zchip programs");
 
-        const game_output = game_cmd.addOutputFileArg("bin/game.ch8");
-        for (game_files) |game_file| _ = game_cmd.addFileArg(b.path(
-            try std.fs.path.join(b.allocator, &.{ "assets/prog", game_file }),
-        ));
+        for (programs) |prog| {
+            const prog_cmd = b.addRunArtifact(compiler_exe);
+            prog_step.dependOn(&prog_cmd.step);
 
-        const install_game = b.addInstallFile(game_output, "prog/game.ch8");
-        b.getInstallStep().dependOn(&install_game.step);
+            const prog_output = prog_cmd.addOutputFileArg(
+                try std.fmt.allocPrint(b.allocator, "bin/{s}.ch8", .{prog.name}),
+            );
+            for (prog.sources) |src_path| _ = prog_cmd.addFileArg(b.path(
+                try std.fs.path.join(b.allocator, &.{ "assets/prog", src_path }),
+            ));
+
+            const install_prog = b.addInstallFile(
+                prog_output,
+                try std.fmt.allocPrint(b.allocator, "prog/{s}.ch8", .{prog.name}),
+            );
+            prog_step.dependOn(&install_prog.step);
+        }
     }
 
-    const run_step = b.step("run", "Run the emulator");
+    const run_step = b.step("run", "Run the zchip emulator");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());

@@ -65,6 +65,7 @@ const RenderPasses = struct {
     },
 };
 
+const lut_key = "lut/basic.cube";
 const font_key = "fonts/pixel_letters.ttf";
 
 var emul: Emulator = .{};
@@ -204,16 +205,16 @@ fn load(self: *const Zengine) !bool {
         try gfx.pass.Bloom.init(&gfx_loader);
 
         const main_win = self.engine.windows.getPtr("main");
-        _ = try gfx_loader.loadLut("lut/basic.cube");
+        _ = try gfx_loader.loadLut(lut_key);
         _ = try gfx_loader.loadFont(font_key, 60);
         _ = try gfx_loader.createSurfaceTexture("messages_buffer", main_win.logicalSize(), .default);
 
-        const st = try gfx_loader.createSurfaceTexture(
+        const surf_tex = try gfx_loader.createSurfaceTexture(
             "emul_screen",
             .{ Mem.scr_hi_w, Mem.scr_hi_h },
             .default,
         );
-        const surf = st.surf;
+        const surf = surf_tex.surf;
         const scr = surf.slice(u32);
         assert(surf.width() * surf.height() == Mem.scr_hi_size);
         for (0..Mem.scr_hi_h) |y| {
@@ -453,8 +454,8 @@ fn update(self: *const Zengine) !bool {
     if (emul.flags.contains(.draw)) {
         emul.flags.remove(.draw);
         is_rendering = true;
-        const st = try gfx_loader.rendererSurfaceTexture("emul_screen");
-        const surf = st.surf;
+        const surf_tex = try gfx_loader.rendererSurfaceTexture("emul_screen");
+        const surf = surf_tex.surf;
         const scr = surf.slice(u32);
         const bw_colors: [4]u32 = .{
             surf.rgba(.{ 0, 0, 0, 255 }),
@@ -596,10 +597,11 @@ fn tick() !void {
     emul.mem.regs.dt -|= 1;
     emul.mem.regs.st -|= 1;
     emul.cpu.run_flags.is_drw_sync = true;
-    try emul.mem.data.write(Mem.addr_drw_sync, 1);
+    const data_size = emul.cpu.dataSize();
+    try emul.mem.data.write(data_size, Mem.addr_drw_sync, 1);
     for (Mem.addr_timer_begin..Mem.addr_timer_end) |addr| {
-        const v = try emul.mem.data.read(@intCast(addr));
-        try emul.mem.data.write(@intCast(addr), v -| 1);
+        const v = try emul.mem.data.read(data_size, @intCast(addr));
+        try emul.mem.data.write(data_size, @intCast(addr), v -| 1);
     }
 }
 

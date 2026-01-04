@@ -30,6 +30,7 @@ pub const Flags = packed struct {
     drw_16x16: bool,
     shift_vx: bool,
     jp_v0a_n: bool,
+    data_size: Mem.Data.Size,
 
     pub const default = device_flags.get(.default);
 
@@ -55,6 +56,7 @@ pub const Flags = packed struct {
             .drw_16x16 = false,
             .shift_vx = false,
             .jp_v0a_n = false,
+            .data_size = .default,
         },
         .schip = .{
             .vf_reset = false,
@@ -64,6 +66,7 @@ pub const Flags = packed struct {
             .drw_16x16 = true,
             .shift_vx = true,
             .jp_v0a_n = true,
+            .data_size = .default,
         },
         .zchip = .{
             .vf_reset = false,
@@ -73,6 +76,7 @@ pub const Flags = packed struct {
             .drw_16x16 = true,
             .shift_vx = false,
             .jp_v0a_n = false,
+            .data_size = .extended,
         },
     });
 };
@@ -118,6 +122,10 @@ pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
     gpa.destroy(self);
 }
 
+pub fn dataSize(self: *const Self) Mem.Data.Size {
+    return Flags.device_flags.getPtrConst(self.device).data_size;
+}
+
 pub fn reset(self: *Self) void {
     self.inst = .invalid;
     self.run_flags = .{};
@@ -127,8 +135,9 @@ pub fn reset(self: *Self) void {
 pub fn step(self: *Self, mem: *Mem) !void {
     sections.sub(.run).sub(.step).unpause();
     defer sections.sub(.run).sub(.step).pause();
+    const data_size = self.dataSize();
     self.inst = .invalid;
-    self.inst = .fromWord(try mem.data.readWord(mem.regs.pc));
+    self.inst = .fromWord(try mem.data.readWord(data_size, mem.regs.pc));
     log.debug("step: {t} ({X:04}) @{X:04}", .{ self.inst.op, self.inst.args.data, mem.regs.pc });
     mem.regs.pc += 2;
     try self.exec(mem);
@@ -326,33 +335,33 @@ pub const inst_handler = struct {
     }
 
     pub fn se_rc(self: *Self, mem: *Mem, args: Args.xkk) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         const akk = args.kk();
         if (mem.regs.v[ax] == akk) {
-            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            const inst: Inst = .decode(try mem.data.readWord(data_size, mem.regs.pc));
             mem.regs.pc += inst.op.byteSize();
         }
         log.debug("SE V{X} #{X:02}", .{ ax, akk });
     }
 
     pub fn sne_rc(self: *Self, mem: *Mem, args: Args.xkk) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         const akk = args.kk();
         if (mem.regs.v[ax] != akk) {
-            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            const inst: Inst = .decode(try mem.data.readWord(data_size, mem.regs.pc));
             mem.regs.pc += inst.op.byteSize();
         }
         log.debug("SNE V{X} #{X:02}", .{ ax, akk });
     }
 
     pub fn se_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         const ay = args.y();
         if (mem.regs.v[ax] == mem.regs.v[ay]) {
-            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            const inst: Inst = .decode(try mem.data.readWord(data_size, mem.regs.pc));
             mem.regs.pc += inst.op.byteSize();
         }
         log.debug("SNE V{X} V{X}", .{ ax, ay });
@@ -433,11 +442,11 @@ pub const inst_handler = struct {
     }
 
     pub fn sne_rr(self: *Self, mem: *Mem, args: Args.xy) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         const ay = args.y();
         if (mem.regs.v[ax] != mem.regs.v[ay]) {
-            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            const inst: Inst = .decode(try mem.data.readWord(data_size, mem.regs.pc));
             mem.regs.pc += inst.op.byteSize();
         }
         log.debug("SNE V{X} V{X}", .{ ax, ay });
@@ -470,29 +479,29 @@ pub const inst_handler = struct {
     }
 
     pub fn skp_r(self: *Self, mem: *Mem, args: Args.x) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         if (try mem.key.isDown(mem.regs.v[ax])) {
-            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            const inst: Inst = .decode(try mem.data.readWord(data_size, mem.regs.pc));
             mem.regs.pc += inst.op.byteSize();
         }
         log.debug("SKP V{X}", .{ax});
     }
 
     pub fn sknp_r(self: *Self, mem: *Mem, args: Args.x) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         if (!try mem.key.isDown(mem.regs.v[ax])) {
-            const inst: Inst = .decode(try mem.data.readWord(mem.regs.pc));
+            const inst: Inst = .decode(try mem.data.readWord(data_size, mem.regs.pc));
             mem.regs.pc += inst.op.byteSize();
         }
         log.debug("SKNP V{X}", .{ax});
     }
 
     pub fn ld_nnnn(self: *Self, mem: *Mem, args: Args.nnnn) !void {
-        _ = self;
         _ = args;
-        const annnn = try mem.data.readWord(mem.regs.pc);
+        const data_size = self.dataSize();
+        const annnn = try mem.data.readWord(data_size, mem.regs.pc);
         mem.regs.pc += 2;
         mem.regs.i = annnn;
         log.debug("LD I #{X:04}", .{annnn});
@@ -562,12 +571,12 @@ pub const inst_handler = struct {
     }
 
     pub fn ld_br(self: *Self, mem: *Mem, args: Args.x) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax = args.x();
         const x = mem.regs.v[ax];
-        try mem.data.write(mem.regs.i, x / 100);
-        try mem.data.write(mem.regs.i + 1, (x / 10) % 10);
-        try mem.data.write(mem.regs.i + 2, x % 10);
+        try mem.data.write(data_size, mem.regs.i, x / 100);
+        try mem.data.write(data_size, mem.regs.i + 1, (x / 10) % 10);
+        try mem.data.write(data_size, mem.regs.i + 2, x % 10);
         log.debug("LD B V{X}", .{ax});
     }
 
@@ -606,7 +615,7 @@ pub const inst_handler = struct {
     }
 
     pub fn ld_iarr(self: *Self, mem: *Mem, args: Args.xy) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax: u5 = args.x();
         const ay: u5 = args.y();
         var nx = ax;
@@ -615,12 +624,12 @@ pub const inst_handler = struct {
             nx = ay;
             ny = ax;
         }
-        for (nx..ny + 1, 0..) |vn, n| try mem.data.write(@intCast(mem.regs.i + n), mem.regs.v[vn]);
+        for (nx..ny + 1, 0..) |vn, n| try mem.data.write(data_size, @intCast(mem.regs.i + n), mem.regs.v[vn]);
         log.debug("LD [I] V{X}-V{X}", .{ ax, ay });
     }
 
     pub fn ld_rria(self: *Self, mem: *Mem, args: Args.xy) !void {
-        _ = self;
+        const data_size = self.dataSize();
         const ax: u5 = args.x();
         const ay: u5 = args.y();
         var nx = ax;
@@ -629,7 +638,7 @@ pub const inst_handler = struct {
             nx = ay;
             ny = ax;
         }
-        for (nx..ny + 1, 0..) |vn, n| mem.regs.v[vn] = try mem.data.read(@intCast(mem.regs.i + n));
+        for (nx..ny + 1, 0..) |vn, n| mem.regs.v[vn] = try mem.data.read(data_size, @intCast(mem.regs.i + n));
         log.debug("LD [I] V{X}-V{X}", .{ ax, ay });
     }
 
@@ -776,6 +785,7 @@ pub const inst_handler = struct {
                         if (!self.run_flags.is_drw_sync) return Inst.Error.WaitForDraw;
                     }
 
+                    const data_size = self.dataSize();
                     const ax = args.x();
                     const ay = args.y();
                     const an = args.n();
@@ -783,7 +793,10 @@ pub const inst_handler = struct {
                         if (drw_16x16 and an == 0) {
                             for (0..16) |_y| {
                                 const y: u4 = @intCast(_y);
-                                const src = try mem.data.readWord(@intCast(mem.regs.i + 2 * _y));
+                                const src = try mem.data.readWordUnaligned(
+                                    data_size,
+                                    @intCast(mem.regs.i + 2 * _y),
+                                );
                                 for (0..16) |_x| {
                                     const x: u4 = @intCast(_x);
                                     var mask: u1 = @truncate(src >> (15 - x));
@@ -807,7 +820,7 @@ pub const inst_handler = struct {
                         } else {
                             for (0..an) |_y| {
                                 const y: u4 = @intCast(_y);
-                                const src = try mem.data.read(@intCast(mem.regs.i + y));
+                                const src = try mem.data.read(data_size, @intCast(mem.regs.i + y));
                                 for (0..8) |_x| {
                                     const x: u3 = @intCast(_x);
                                     var mask: u1 = @truncate(src >> (7 - x));
@@ -833,7 +846,10 @@ pub const inst_handler = struct {
                         if (drw_16x16 and an == 0) {
                             for (0..16) |_y| {
                                 const y: u4 = @intCast(_y);
-                                const src: u16 = try mem.data.readWord(@intCast(mem.regs.i + 2 * _y));
+                                const src: u16 = try mem.data.readWordUnaligned(
+                                    data_size,
+                                    @intCast(mem.regs.i + 2 * _y),
+                                );
                                 for (0..16) |_x| {
                                     const x: u4 = @intCast(_x);
                                     var mask: u1 = @truncate(src >> (15 - x));
@@ -857,7 +873,7 @@ pub const inst_handler = struct {
                         } else {
                             for (0..an) |_y| {
                                 const y: u4 = @intCast(_y);
-                                const src = try mem.data.read(@intCast(mem.regs.i + y));
+                                const src = try mem.data.read(data_size, @intCast(mem.regs.i + y));
                                 for (0..8) |_x| {
                                     const x: u3 = @intCast(_x);
                                     var mask: u1 = @truncate(src >> (7 - x));
@@ -889,9 +905,9 @@ pub const inst_handler = struct {
         fn ld_iar(comptime i_increment: bool) InstHandler {
             const inner = struct {
                 fn ld_iar(self: *Self, mem: *Mem, args: Args.x) !void {
-                    _ = self;
+                    const data_size = self.dataSize();
                     const ax: u5 = args.x();
-                    for (0..ax + 1) |n| try mem.data.write(@intCast(mem.regs.i + n), mem.regs.v[n]);
+                    for (0..ax + 1) |n| try mem.data.write(data_size, @intCast(mem.regs.i + n), mem.regs.v[n]);
                     if (i_increment) mem.regs.i +%= ax + 1;
                     log.debug("LD [I] V0-V{X}", .{ax});
                 }
@@ -902,9 +918,9 @@ pub const inst_handler = struct {
         fn ld_ria(comptime i_increment: bool) InstHandler {
             const inner = struct {
                 fn ld_ria(self: *Self, mem: *Mem, args: Args.x) !void {
-                    _ = self;
+                    const data_size = self.dataSize();
                     const ax: u5 = args.x();
-                    for (0..ax + 1) |n| mem.regs.v[n] = try mem.data.read(@intCast(mem.regs.i + n));
+                    for (0..ax + 1) |n| mem.regs.v[n] = try mem.data.read(data_size, @intCast(mem.regs.i + n));
                     if (i_increment) mem.regs.i +%= ax + 1;
                     log.debug("LD V0-V{X} [I]", .{ax});
                 }

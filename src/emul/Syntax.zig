@@ -242,6 +242,7 @@ pub const Expr = struct {
         if (is_reg) return .{ .type = .r, .data = reg };
         if (is_reg_reg) return .{ .type = .rr, .data = reg_reg };
         if (token[0] == '@') return .{ .type = .ref };
+        if (token[0] == ':') return .{ .type = .label };
         if (str.eql(token, "i")) return .{ .type = .i };
         if (str.eql(token, "i[]")) return .{ .type = .ia };
         if (str.eql(token, "dt")) return .{ .type = .d };
@@ -255,7 +256,6 @@ pub const Expr = struct {
         if (str.eql(token, "$audio")) return .{ .type = .audio };
         if (str.eql(token, "$pitch")) return .{ .type = .pitch };
         if (token[0] == '$') return .{ .type = .def };
-        if (token[0] == ':') return .{ .type = .label };
         return null;
     }
 };

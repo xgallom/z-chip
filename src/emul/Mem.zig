@@ -8,13 +8,19 @@ const log = std.log.scoped(.mem);
 
 pub const regs_v_len = 16;
 pub const stack_size = 16;
-pub const data_size = 0x1000;
+pub const data_size = 0x10000;
 pub const addr_drw_sync = 0x169;
 pub const addr_timer_begin = 0x180;
 pub const addr_timer_end = 0x190;
 pub const prog_begin = 0x200;
-pub const prog_end = data_size;
-pub const prog_size = prog_end - prog_begin;
+pub const prog_end: std.EnumArray(Data.Size, usize) = .init(.{
+    .default = 0x1000,
+    .extended = data_size,
+});
+pub const prog_size: std.EnumArray(Data.Size, usize) = .init(.{
+    .default = prog_end.get(.default) - prog_begin,
+    .extended = prog_end.get(.extended) - prog_begin,
+});
 pub const scr_w = 64;
 pub const scr_h = 32;
 pub const scr_size = scr_w * scr_h;
@@ -38,6 +44,31 @@ key: Keyboard,
 
 const Self = @This();
 pub const Error = error{ OutOfRange, BadAlignment };
+
+pub fn init(gpa: std.mem.Allocator) !*Self {
+    const self = try gpa.create(Self);
+    self.reset();
+    return self;
+}
+
+pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+    gpa.destroy(self);
+}
+
+pub fn reset(self: *Self) void {
+    self.regs.reset();
+    self.stack.clear();
+    self.data.reset();
+    self.scr.clear(.initFull());
+    self.key.clear();
+}
+
+pub fn dump(self: *const Self, w: *std.Io.Writer) !void {
+    try w.print("memory dump:\n", .{});
+    try self.regs.dump(w);
+    try self.stack.dump(w);
+    try self.data.dump(w);
+}
 
 pub const Regs = struct {
     pc: u16 = prog_begin,
@@ -99,6 +130,11 @@ pub const Stack = struct {
 pub const Data = struct {
     data: [data_size]u8,
 
+    pub const Size = enum(u1) {
+        default,
+        extended,
+    };
+
     pub fn reset(self: *Data) void {
         @memset(&self.data, 0);
         @memcpy(self.data[0..font.size], &font.data);
@@ -108,35 +144,50 @@ pub const Data = struct {
         _ = try prog.readSliceShort(self.data[prog_begin..]);
     }
 
-    pub fn slice(self: *Data, start: u16, end: u16) []u8 {
+    pub fn slice(self: *Data, start: usize, end: usize) []u8 {
         assert(end <= data_size);
         assert(start <= end);
         return self.data[start..end];
     }
 
-    pub fn sliceConst(self: *const Data, start: u16, end: u16) []const u8 {
+    pub fn sliceConst(self: *const Data, start: usize, end: usize) []const u8 {
         assert(end <= data_size);
         assert(start <= end);
         return self.data[start..end];
     }
 
-    pub fn read(self: *const Data, addr: u16) !u8 {
-        if (!isValid(.any, addr)) {
+    pub fn read(self: *const Data, size: Size, addr: u16) !u8 {
+        if (!isValid(.any, size, addr)) {
             log.err("read @{X:04} out of range", .{addr});
             return Error.OutOfRange;
         }
         return self.uncheckedRead(addr);
     }
 
-    pub fn readWord(self: *const Data, addr: u16) !u16 {
-        if (!isValid(.any, addr)) {
+    pub fn readWord(self: *const Data, size: Size, addr: u16) !u16 {
+        if (!isValid(.any, size, addr)) {
             log.err("read word @{X:04} out of range", .{addr});
             return Error.OutOfRange;
         }
-        if (addr & 0x1 != 0) {
-            log.warn("read word @{X:04} bad alignment", .{addr});
-            // log.err("read word @{X:04} bad alignment", .{addr});
-            // return Error.BadAlignment;
+        if (!isValid(.any, size, addr + 1)) {
+            log.err("read word @{X:04} out of range", .{addr + 1});
+            return Error.OutOfRange;
+        }
+        if (addr % 2 == 1) {
+            log.err("read word @{X:04} bad alignment", .{addr});
+            return Error.BadAlignment;
+        }
+        return Inst.wordFromData(.{ self.data[addr], self.data[addr + 1] });
+    }
+
+    pub fn readWordUnaligned(self: *const Data, size: Size, addr: u16) !u16 {
+        if (!isValid(.any, size, addr)) {
+            log.err("read word @{X:04} out of range", .{addr});
+            return Error.OutOfRange;
+        }
+        if (!isValid(.any, size, addr + 1)) {
+            log.err("read word @{X:04} out of range", .{addr + 1});
+            return Error.OutOfRange;
         }
         return Inst.wordFromData(.{ self.data[addr], self.data[addr + 1] });
     }
@@ -146,26 +197,26 @@ pub const Data = struct {
         return self.data[addr];
     }
 
-    pub fn write(self: *Data, addr: u16, val: u8) !void {
-        if (!isValid(.any, addr)) {
+    pub fn write(self: *Data, size: Size, addr: u16, val: u8) !void {
+        if (!isValid(.any, size, addr)) {
             log.err("write @{X:04} out of range", .{addr});
             return Error.OutOfRange;
         }
         self.data[addr] = val;
     }
 
-    fn isValid(comptime section: enum { font, prog, any }, addr: u16) bool {
+    fn isValid(comptime section: enum { font, prog, any }, size: Size, addr: u16) bool {
         return switch (comptime section) {
             .font => addr < font.size,
-            .prog => addr >= prog_begin and addr < prog_end,
-            .any => addr < prog_end,
+            .prog => addr >= prog_begin and addr < prog_end.get(size),
+            .any => addr < prog_end.get(size),
         };
     }
 
     pub fn dump(self: *const Data, w: *std.Io.Writer) !void {
         try w.print("data:\n", .{});
         {
-            var n: u16 = 0;
+            var n: usize = 0;
             comptime assert(data_size % 0x20 == 0);
             while (n < data_size) : (n += 0x20) {
                 const line = self.sliceConst(n, n + 0x20);
@@ -252,6 +303,7 @@ pub const Screen = struct {
         result[scr_hi_w + 1] = '+';
         break :blk result;
     };
+    const cells: []const u8 = " .+#";
 
     pub fn dump(self: *const Screen, w: *std.Io.Writer) !void {
         try w.print("screen:\n", .{});
@@ -260,13 +312,7 @@ pub const Screen = struct {
             try w.print("|", .{});
             for (0..scr_hi_w) |x| {
                 const p = self.readPlaneHi(@intCast(y), @intCast(x));
-                const c: u8 = switch (p) {
-                    0 => ' ',
-                    1 => '.',
-                    2 => '+',
-                    3 => '#',
-                };
-                try w.print("{c}", .{c});
+                try w.print("{c}", .{cells[p]});
             }
             try w.print("|\n", .{});
         }
@@ -307,28 +353,3 @@ pub const Keyboard = struct {
         });
     }
 };
-
-pub fn init(gpa: std.mem.Allocator) !*Self {
-    const self = try gpa.create(Self);
-    self.reset();
-    return self;
-}
-
-pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
-    gpa.destroy(self);
-}
-
-pub fn reset(self: *Self) void {
-    self.regs.reset();
-    self.stack.clear();
-    self.data.reset();
-    self.scr.clear(.initFull());
-    self.key.clear();
-}
-
-pub fn dump(self: *const Self, w: *std.Io.Writer) !void {
-    try w.print("memory dump:\n", .{});
-    try self.regs.dump(w);
-    try self.stack.dump(w);
-    try self.data.dump(w);
-}
