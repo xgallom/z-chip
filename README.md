@@ -1,6 +1,6 @@
 # z-chip
 
-CHIP-8 / SUPER-CHIP / XO-CHIP-class emulator, written in Zig, GPU-rendered via [zengine](../zengine).
+CHIP-8 / SUPER-CHIP / XO-CHIP-class emulator, written in Zig, GPU-rendered via [zengine](https://www.github.com/xgallom/zengine).
 
 Includes `z-chip-c`, a compiler for `.zc8`, a small assembly-like source format that compiles to CHIP-8 bytecode.
 
