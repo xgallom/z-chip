@@ -25,16 +25,24 @@ pub fn build(b: *std.Build) !void {
     const z = @import("zengine");
     const options = z.getOptions(b);
 
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zengine", .module = zengine.module("zengine") },
+        },
+        .pic = true,
+    });
+
+    const check_exe = b.addExecutable(.{
+        .name = "z-chip",
+        .root_module = exe_mod,
+    });
+
     const exe = b.addExecutable(.{
         .name = "z-chip",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zengine", .module = zengine.module("zengine") },
-            },
-        }),
+        .root_module = exe_mod,
     });
     b.installArtifact(exe);
 
@@ -100,6 +108,9 @@ pub fn build(b: *std.Build) !void {
             prog_step.dependOn(&install_prog.step);
         }
     }
+
+    const check_step = b.step("check", "Check sources");
+    check_step.dependOn(&check_exe.step);
 
     const run_step = b.step("run", "Run the zchip emulator");
     const run_cmd = b.addRunArtifact(exe);

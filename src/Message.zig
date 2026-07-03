@@ -28,7 +28,7 @@ pub fn add(text: []const u8) !void {
     const self = try messages.addOne(allocators.gpa());
     self.* = .{
         .text = text,
-        .start = global.engineNowNano(),
+        .start = global.sinceStartNano(),
         .len = std.time.ns_per_s * 2,
     };
     messages_len.setTarget(@max(1, @as(f32, @floatFromInt(messages.items.len))));
@@ -44,7 +44,7 @@ pub fn remove(idx: usize) void {
 pub fn render(surf: gfx.Surface, font: gfx.ttf.Font) !void {
     const op = math.param.op;
     var to_remove: std.ArrayList(usize) = try .initCapacity(allocators.frame(), messages.items.len);
-    const now = global.engineNowNano();
+    const now = global.sinceStartNano();
     var off: math.Point_i32 = .{ 64, 32 };
     @memset(surf.slice(u32), 0);
     messages_len.update(global.timeSinceLastFrame().toFloat().toValue32(.s));

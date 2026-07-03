@@ -63,6 +63,14 @@ const RenderPasses = struct {
     bloom: gfx.pass.Bloom = .{
         .intensity = 0.05,
     },
+    render: gfx.pass.Render = .{
+        .exposure = 2,
+        .gamma = 0.75,
+        .config = .{
+            .has_agx = true,
+            .has_lut = true,
+        },
+    },
 };
 
 const lut_key = "lut/basic.cube";
@@ -184,7 +192,6 @@ pub fn main() !void {
     defer engine.deinit();
 
     const args = global.args();
-    if (args.len < 1) return error.NotEnoughArguments;
     if (args.len > 1) return error.TooManyArguments;
 
     return engine.run();
@@ -622,6 +629,7 @@ fn render(self: *const Zengine) !void {
 
     _ = try emul_render.renderScreen(self.renderer, self.ui, &.{
         gfx_passes.bloom.interface(),
+        gfx_passes.render.interface(),
     }, &gfx_fence);
 }
 

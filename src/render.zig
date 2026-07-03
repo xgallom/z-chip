@@ -35,7 +35,7 @@ pub fn createEmulPipeline(loader: *gfx.Loader) !void {
 pub fn renderScreen(
     self: *const Renderer,
     ui_ptr: ?*ui_mod.UI,
-    passes: []const gfx.pass.TextureInterface,
+    passes: []const gfx.pass.Interface,
     fence: ?*gfx.GPUFence,
 ) !bool {
     const section = Renderer.sections.sub(.render);
@@ -50,14 +50,12 @@ pub fn renderScreen(
 
     const emul_pipeline = self.pipelines.graphics.get("emul_screen");
     const blend_pipeline = self.pipelines.graphics.get("blend");
-    const render_pipeline = self.pipelines.graphics.get("render");
+    // const render_pipeline = self.pipelines.graphics.get("render");
     const emul_screen = self.textures.get("emul_screen");
     const messages_buffer = self.textures.get("messages_buffer");
     const output_buffer = self.textures.get("output_buffer");
     const screen_buffer = self.textures.get("screen_buffer");
     const screen_sampler = self.samplers.get("nearest_clamp_to_edge");
-    const lut_sampler = self.samplers.get("trilinear_clamp_to_edge");
-    const lut_map = self.textures.get(self.settings.lut);
 
     const fa = allocators.frame();
 
@@ -123,51 +121,58 @@ pub fn renderScreen(
     // They are swapped in opposite order first run
     // src -> screen_buffer
     // dst -> output_buffer
-    var src_buffer = output_buffer;
-    var dst_buffer = screen_buffer;
-    for (passes) |pass| {
-        std.mem.swap(gfx.GPUTexture, &src_buffer, &dst_buffer);
-        try pass.render(self, command_buffer, src_buffer, dst_buffer);
+    var src_buf = output_buffer;
+    var dst_buf = screen_buffer;
+    for (passes, 0..) |tex_pass, n| {
+        std.mem.swap(gfx.GPUTexture, &src_buf, &dst_buf);
+        try tex_pass.render(self, command_buffer, src_buf, if (n == passes.len - 1) swapchain else dst_buf);
     }
 
-    {
-        var render_pass = try command_buffer.renderPass(&.{
-            .{ .texture = swapchain, .load_op = .clear, .store_op = .store },
-        }, null);
-
-        render_pass.bindPipeline(render_pipeline);
-        command_buffer.pushUniformData(.fragment, 0, &self.settings.uniformBuffer());
-        try render_pass.bindSamplers(.fragment, 0, &.{
-            .{ .texture = output_buffer, .sampler = screen_sampler },
-            .{ .texture = lut_map, .sampler = lut_sampler },
-        });
-        render_pass.drawScreen();
-        render_pass.end();
-    }
+    // {
+    //     var render_pass = try command_buffer.renderPass(&.{
+    //         .{ .texture = swapchain, .load_op = .clear, .store_op = .store },
+    //     }, null);
+    //
+    //     render_pass.bindPipeline(render_pipeline);
+    //     command_buffer.pushUniformData(.fragment, 0, &self.settings.uniformBuffer());
+    //     try render_pass.bindSamplers(.fragment, 0, &.{
+    //         .{ .texture = output_buffer, .sampler = screen_sampler },
+    //         .{ .texture = lut_map, .sampler = lut_sampler },
+    //     });
+    //     render_pass.drawScreen();
+    //     render_pass.end();
+    // }
 
     if (ui_ptr) |ui| {
         section.sub(.ui).begin();
         if (ui.render_ui) {
+            const render_pass = gfx.pass.Render{
+                .config = .{
+                    .has_srgb = true,
+                    .clear = false,
+                },
+            };
             try ui.submitPass(command_buffer, output_buffer);
-            {
-                var render_pass = try command_buffer.renderPass(&.{
-                    .{ .texture = swapchain, .load_op = .load, .store_op = .store },
-                }, null);
-
-                const ui_settings: Renderer.Settings = .{
-                    .config = .{
-                        .has_srgb = true,
-                    },
-                };
-                render_pass.bindPipeline(render_pipeline);
-                command_buffer.pushUniformData(.fragment, 0, &ui_settings.uniformBuffer());
-                try render_pass.bindSamplers(.fragment, 0, &.{
-                    .{ .texture = output_buffer, .sampler = screen_sampler },
-                    .{ .texture = lut_map, .sampler = lut_sampler },
-                });
-                render_pass.drawScreen();
-                render_pass.end();
-            }
+            try render_pass.render(self, command_buffer, screen_buffer, swapchain);
+            // {
+            //     var render_pass = try command_buffer.renderPass(&.{
+            //         .{ .texture = swapchain, .load_op = .load, .store_op = .store },
+            //     }, null);
+            //
+            //     const ui_settings: Renderer.Settings = .{
+            //         .config = .{
+            //             .has_srgb = true,
+            //         },
+            //     };
+            //     render_pass.bindPipeline(render_pipeline);
+            //     command_buffer.pushUniformData(.fragment, 0, &ui_settings.uniformBuffer());
+            //     try render_pass.bindSamplers(.fragment, 0, &.{
+            //         .{ .texture = output_buffer, .sampler = screen_sampler },
+            //         .{ .texture = lut_map, .sampler = lut_sampler },
+            //     });
+            //     render_pass.drawScreen();
+            //     render_pass.end();
+            // }
         }
         section.sub(.ui).end();
     }
